@@ -1,0 +1,6 @@
+{
+  "name": "Campus OS — Faculty Portal",
+  "description": "High-fidelity responsive PWA for faculty academic management, real-time live QR attendance, gradebook, timetable builder, and AI student analytics.",
+  "requestFramePermissions": ["camera", "microphone", "notifications"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
