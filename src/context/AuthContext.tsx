@@ -41,6 +41,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       name: data.name,
       email: data.email,
       is_admin: data.is_admin,
+      // Legacy fields to prevent crashes
+      subjects: [],
+      accountType: 'normal_professor',
+      department: '',
+      classTeacherClassName: '',
+      isClassTeacher: false,
+      avatar: data.name.slice(0, 2).toUpperCase(),
+      title: 'Faculty'
     });
   };
 

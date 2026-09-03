@@ -108,7 +108,7 @@ export const Navigation: React.FC<NavigationProps> = ({
             <div className="mt-3 pt-2.5 border-t border-[#DCEAE3] flex items-center justify-between text-xs relative z-10">
               <span className="text-[10px] font-extrabold uppercase text-[#5C6B63]">Account Role</span>
               <span className="px-2.5 py-0.5 rounded-full bg-[#12A176]/12 text-[#12A176] font-extrabold text-[10px]">
-                {user.accountType === 'class_teacher' ? 'Class Teacher' : 'Subject Professor'}
+              {user.isClassTeacher ? 'Class Teacher' : 'Subject Professor'}
               </span>
             </div>
           </div>
@@ -167,15 +167,16 @@ export const Navigation: React.FC<NavigationProps> = ({
           </button>
 
           {/* Account Role Switcher Toggle */}
-          <button
-            onClick={() => switchAccountRole(user.accountType === 'class_teacher' ? 'normal_professor' : 'class_teacher')}
+            <button
+            onClick={() => switchAccountRole(user.isClassTeacher ? 'normal_professor' : 'class_teacher')}
             className="w-full py-2.5 px-3 rounded-xl bg-[#12A176]/12 hover:bg-[#12A176]/20 border border-[#12A176]/30 text-[#12A176] text-xs font-extrabold flex items-center justify-between transition-colors cursor-pointer tap-active"
           >
             <span>Switch Role</span>
             <span className="text-[10px] font-mono uppercase bg-[#12A176] px-2 py-0.5 rounded text-white font-black">
-              {user.accountType === 'class_teacher' ? '→ Professor' : '→ Class Teacher'}
+              {user.isClassTeacher ? '→ Professor' : '→ Class Teacher'}
             </span>
           </button>
+
         </div>
       </aside>
 
@@ -401,7 +402,7 @@ export const Navigation: React.FC<NavigationProps> = ({
 
                   <button
                     onClick={() => {
-                      switchAccountRole(user.accountType === 'class_teacher' ? 'normal_professor' : 'class_teacher');
+                      switchAccountRole(user.isClassTeacher ? 'normal_professor' : 'class_teacher');
                       setIsMoreSheetOpen(false);
                     }}
                     className="p-3 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/50 rounded-xl flex items-center gap-3 text-left hover:border-emerald-500 transition-colors cursor-pointer"
@@ -412,7 +413,7 @@ export const Navigation: React.FC<NavigationProps> = ({
                     <div>
                       <span className="text-xs font-black block text-emerald-700 dark:text-emerald-400">Switch Role</span>
                       <span className="text-[10px] text-emerald-600/80 dark:text-emerald-300/80">
-                        {user.accountType === 'class_teacher' ? '→ Professor' : '→ Class Teacher'}
+                        {user.isClassTeacher ? '→ Professor' : '→ Class Teacher'}
                       </span>
                     </div>
                   </button>

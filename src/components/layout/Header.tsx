@@ -39,15 +39,15 @@ export const Header: React.FC<HeaderProps> = ({
           <div className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-[#12A176]/12 text-[#12A176] shrink-0 border border-[#12A176]/20">
             <span className="w-1.5 h-1.5 rounded-full bg-[#12A176] animate-pulse" />
             <span>
-              {user.accountType === 'class_teacher'
+              {user.isClassTeacher
                 ? `Class Teacher (${user.classTeacherClassName || 'SYBSc IT'})`
-                : `Subject Professor (${user.subjects[0]?.name || 'Networks'})`}
+                : `Subject Professor (${user.subjects?.[0]?.name || 'Networks'})`}
             </span>
           </div>
         </div>
 
         <p className="text-[11px] md:text-xs text-[#5C6B63] font-semibold truncate mt-0.5">
-          {subtitle || `${user.department} • ${user.name}`}
+          {subtitle || `${user.department || 'Department'} • ${user.name}`}
         </p>
       </div>
 

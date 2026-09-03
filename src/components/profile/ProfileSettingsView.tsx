@@ -30,9 +30,13 @@ import { useOffline } from '../../context/OfflineContext';
 import { useTheme } from '../../context/ThemeContext';
 
 export const ProfileSettingsView: React.FC = () => {
-  const { user, logout, activeRole, switchRole } = useAuth();
+  const { user, logout } = useAuth();
   const { isOnline, queuedActions, clearQueue } = useOffline();
   const { theme: selectedTheme, setTheme } = useTheme();
+
+  // Role switching
+  const [activeRole, setActiveRole] = useState<'class_teacher' | 'subject_teacher'>('class_teacher');
+  const switchRole = (role: 'class_teacher' | 'subject_teacher') => setActiveRole(role);
 
   // Settings State
   const [hapticFeedback, setHapticFeedback] = useState(true);
@@ -92,12 +96,12 @@ export const ProfileSettingsView: React.FC = () => {
                 {user?.name}
               </h2>
               <span className="px-2.5 py-0.5 rounded-full bg-[#A3E635] text-[#1A1025] font-extrabold text-[10px]">
-                {user?.accountType === 'class_teacher' ? 'Class Teacher' : 'Subject Professor'}
+                {user?.isClassTeacher ? 'Class Teacher' : 'Subject Professor'}
               </span>
             </div>
 
             <p className="text-xs text-[#6B6478] font-bold mt-1">
-              {user?.title} • Department of Information Technology
+              {user?.title || 'Faculty'} • {user?.department || 'Information Technology'}
             </p>
 
             <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2 mt-3">

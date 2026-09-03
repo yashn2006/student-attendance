@@ -8,6 +8,13 @@ export interface User {
   is_admin: boolean;
   department?: string;
   avatar?: string;
+
+  // Legacy compatibility
+  subjects: Subject[];
+  accountType: FacultyAccountRole;
+  classTeacherClassName: string;
+  isClassTeacher: boolean;
+  title: string;
 }
 
 export interface Subject {
