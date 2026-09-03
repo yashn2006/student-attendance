@@ -11,6 +11,7 @@ import { DashboardView } from './components/dashboard/DashboardView';
 import { LiveSessionView } from './components/session/LiveSessionView';
 import { AttendanceSheetView } from './components/attendance/AttendanceSheetView';
 import { TimetableBuilderView } from './components/timetable/TimetableBuilderView';
+import { AdminDashboard } from './components/admin/AdminDashboard';
 import { LectureAIAnalyzerView } from './components/ai/LectureAIAnalyzerView';
 import { ClassStudentsView } from './components/students/ClassStudentsView';
 import { GradebookView } from './components/gradebook/GradebookView';
@@ -185,6 +186,8 @@ const MainAppContent: React.FC = () => {
               {currentTab === 'attendance_sheet' && <AttendanceSheetView />}
 
               {currentTab === 'timetable' && <TimetableBuilderView />}
+
+              {currentTab === 'admin' && <AdminDashboard />}
 
               {currentTab === 'ai_analyzer' && <LectureAIAnalyzerView />}
 

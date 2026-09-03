@@ -44,6 +44,7 @@ export const navItems: NavItem[] = [
   { id: 'resources', label: 'Resources', icon: FolderKanban, description: 'Lab manuals & lecture materials' },
   { id: 'chat', label: 'Faculty Chat', icon: MessageSquare, description: 'Channels & broadcast messages' },
   { id: 'analytics', label: 'Analytics', icon: BarChart3, description: 'Mastery heatmaps & defaulter flags' },
+  { id: 'admin', label: 'Admin', icon: ShieldCheck, description: 'Admin panel' },
   { id: 'profile', label: 'Profile & Settings', icon: User, description: 'Account roles, biometrics & PWA' }
 ];
 
@@ -114,7 +115,7 @@ export const Navigation: React.FC<NavigationProps> = ({
 
           {/* Navigation Links */}
           <nav className="space-y-1.5 overflow-y-auto max-h-[calc(100vh-380px)] pr-1">
-            {navItems.map((item) => {
+            {navItems.filter(item => item.id !== 'admin' || user?.is_admin).map((item) => {
               const Icon = item.icon;
               const isActive = currentTab === item.id;
 

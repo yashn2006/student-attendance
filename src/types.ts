@@ -1,32 +1,33 @@
 export type FacultyAccountRole = 'class_teacher' | 'normal_professor';
-export type Role = 'class_teacher' | 'subject_teacher';
+
+export interface User {
+  id: string; // auth.users.id
+  supabase_user: string;
+  name: string;
+  email: string;
+  is_admin: boolean;
+  department?: string;
+  avatar?: string;
+}
 
 export interface Subject {
   id: string;
   name: string;
   code: string;
-  className: string;
-  totalStudents: number;
 }
 
-export type SubjectInfo = Subject;
-
-export interface UserProfile {
+export interface Class {
   id: string;
   name: string;
-  title: string;
-  email: string;
-  avatar: string;
-  department: string;
-  facultyId: string;
-  accountType: FacultyAccountRole;
-  isClassTeacher: boolean;
-  classTeacherClassId?: string;
-  classTeacherClassName?: string;
-  subjects: Subject[];
-  roles?: Role[];
-  activeRole?: Role;
-  selectedSubjectId?: string;
+  section: string;
+  teacher_id: string;
+}
+
+export interface ClassSubjectTeacher {
+  id: string;
+  class_id: string;
+  subject_id: string;
+  teacher_id: string;
 }
 
 export type FacultyUser = UserProfile;
@@ -90,6 +91,15 @@ export interface StudentSubmission {
   status: 'Submitted' | 'Late' | 'Pending';
   score?: number;
   feedback?: string;
+}
+
+export interface ClassSubjectTeacher {
+  id: string;
+  classId: string;
+  subjectId: string;
+  teacherId: string;
+  teacherName?: string;
+  subjectName?: string;
 }
 
 export interface Assignment {
