@@ -14,8 +14,8 @@ export const TeacherAssignments: React.FC = () => {
   useEffect(() => { fetchData(); }, []);
 
   const fetchData = async () => {
-    const { data: aData } = await supabase.from('class_subject_teachers').select('id, classes(name), subjects(name), teachers(name)');
-    const { data: cData } = await supabase.from('classes').select('id, name');
+    const { data: aData } = await supabase.from('class_subject_teachers').select('id, classes(name, section), subjects(name), teachers(name)');
+    const { data: cData } = await supabase.from('classes').select('id, name, section');
     const { data: sData } = await supabase.from('subjects').select('id, name');
     const { data: tData } = await supabase.from('teachers').select('id, name');
     if (aData) setAssignments(aData);
@@ -32,7 +32,7 @@ export const TeacherAssignments: React.FC = () => {
   return (
     <div className="space-y-4">
       <div className="flex gap-2">
-        <select value={classId} onChange={e => setClassId(e.target.value)} className="border p-2 rounded-xl text-xs"><option>Select Class</option>{classes.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
+        <select value={classId} onChange={e => setClassId(e.target.value)} className="border p-2 rounded-xl text-xs"><option>Select Class</option>{classes.map(c => <option key={c.id} value={c.id}>{c.name} — {c.section}</option>)}</select>
         <select value={subjectId} onChange={e => setSubjectId(e.target.value)} className="border p-2 rounded-xl text-xs"><option>Select Subject</option>{subjects.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select>
         <select value={teacherId} onChange={e => setTeacherId(e.target.value)} className="border p-2 rounded-xl text-xs"><option>Select Teacher</option>{teachers.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}</select>
         <button onClick={handleAdd} className="bg-emerald-600 text-white px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1"><Plus className="w-4 h-4"/>Assign</button>
@@ -44,7 +44,7 @@ export const TeacherAssignments: React.FC = () => {
         <tbody className="divide-y text-xs">
           {assignments.map(a => (
             <tr key={a.id}>
-              <td className="p-3">{a.classes?.name}</td>
+              <td className="p-3">{a.classes?.name} — {a.classes?.section}</td>
               <td className="p-3">{a.subjects?.name}</td>
               <td className="p-3">{a.teachers?.name}</td>
             </tr>

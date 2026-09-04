@@ -7,25 +7,32 @@ export const ClassRoster: React.FC = () => {
   const [students, setStudents] = useState<any[]>([]);
 
   useEffect(() => { 
-    supabase.from('classes').select('id, name').then(({ data }) => { if (data) setClasses(data); });
+    supabase.from('classes').select('id, name, section').then(({ data }) => { if (data) setClasses(data); });
   }, []);
 
   useEffect(() => {
-    if (selectedClassId) {
-      supabase.from('class_enrollments')
-        .select('students(name, email)')
-        .eq('class_id', selectedClassId)
-        .then(({ data }) => { 
-          if (data) setStudents(data.map((item: any) => item.students)); 
-        });
-    }
+    const fetchStudents = async () => {
+      if (!selectedClassId) return;
+      
+      try {
+        const { data, error } = await supabase.from('class_enrollments')
+          .select('students(name, email)')
+          .eq('class_id', selectedClassId);
+          
+        if (error) throw error;
+        if (data) setStudents(data.map((item: any) => item.students)); 
+      } catch (err) {
+        console.error('Error fetching students:', err);
+      }
+    };
+    fetchStudents();
   }, [selectedClassId]);
 
   return (
     <div className="space-y-4">
       <select value={selectedClassId} onChange={e => setSelectedClassId(e.target.value)} className="border p-2 rounded-xl text-xs w-full">
         <option value="">Select Class</option>
-        {classes.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+        {classes.map(c => <option key={c.id} value={c.id}>{c.name} — {c.section}</option>)}
       </select>
       <table className="w-full text-left border-collapse">
         <thead className="text-[11px] text-slate-500 uppercase">
