@@ -18,8 +18,12 @@ export const ClassesManager: React.FC = () => {
   }, []);
 
   const fetchData = async () => {
-    const { data: cData } = await supabase.from('classes').select('*, teachers(name)');
-    const { data: tData } = await supabase.from('teachers').select('id, name');
+    const { data: cData, error: cError } = await supabase.from('classes').select('*, teachers(name)');
+    const { data: tData, error: tError } = await supabase.from('teachers').select('id, name');
+    
+    if (cError) console.error('Classes fetch error:', cError);
+    if (tError) console.error('Teachers fetch error:', tError);
+
     if (cData) setClasses(cData);
     if (tData) setTeachers(tData);
   };
@@ -57,7 +61,23 @@ export const ClassesManager: React.FC = () => {
 
   return (
     <div className="space-y-4">
-      {/* ... (form remains) */}
+      <div className="flex flex-col gap-2">
+        <div className="flex gap-2">
+          <select value={name} onChange={e => setName(e.target.value)} className="border p-2 rounded-xl text-xs">
+            {YEARS.map(y => <option key={y} value={y}>{y}</option>)}
+          </select>
+          <select value={section} onChange={e => setSection(e.target.value)} className="border p-2 rounded-xl text-xs">
+            {SECTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+          <select value={teacherId} onChange={e => setTeacherId(e.target.value)} className="border p-2 rounded-xl text-xs">
+            <option value="">Select Teacher</option>
+            {teachers.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+          </select>
+          <button onClick={handleAdd} className="bg-emerald-600 text-white px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1"><Plus className="w-4 h-4"/>Add</button>
+        </div>
+        {error && <p className="text-rose-600 text-xs flex items-center gap-1"><AlertCircle className="w-3 h-3"/>{error}</p>}
+      </div>
+
       <table className="w-full text-left border-collapse">
         <thead className="text-[11px] text-slate-500 uppercase">
           <tr><th className="p-3">Name</th><th className="p-3">Section</th><th className="p-3">Teacher</th><th className="p-3">Actions</th></tr>
