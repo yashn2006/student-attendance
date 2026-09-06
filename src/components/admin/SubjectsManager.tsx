@@ -8,6 +8,8 @@ export const SubjectsManager: React.FC = () => {
   const [name, setName] = useState('');
   const [code, setCode] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editCode, setEditCode] = useState('');
 
   useEffect(() => { fetchSubjects(); }, []);
 
@@ -27,12 +29,6 @@ export const SubjectsManager: React.FC = () => {
     fetchSubjects();
   };
 
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editName, setEditName] = useState('');
-  const [editCode, setEditCode] = useState('');
-
-  // ... (existing imports, fetchSubjects, etc)
-
   const handleEdit = (s: Subject) => {
     setEditingId(s.id);
     setEditName(s.name);
@@ -47,9 +43,15 @@ export const SubjectsManager: React.FC = () => {
 
   return (
     <div className="space-y-4">
-      {/* ... (add form) */}
+      <div className="flex gap-2">
+        <input placeholder="Name" value={name} onChange={e => setName(e.target.value)} className="border p-2 rounded-xl text-xs" />
+        <input placeholder="Code" value={code} onChange={e => setCode(e.target.value)} className="border p-2 rounded-xl text-xs" />
+        <button onClick={handleAdd} className="bg-emerald-600 text-white px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1"><Plus className="w-4 h-4"/>Add</button>
+      </div>
       <table className="w-full text-left border-collapse">
-        {/* ... (thead) */}
+        <thead className="text-[11px] text-slate-500 uppercase">
+          <tr><th className="p-3">Name</th><th className="p-3">Code</th><th className="p-3">Actions</th></tr>
+        </thead>
         <tbody className="divide-y text-xs">
           {subjects.map(s => (
             <tr key={s.id}>
