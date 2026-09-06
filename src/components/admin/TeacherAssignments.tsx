@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabase';
-import { Plus } from 'lucide-react';
+import { Trash2, Plus } from 'lucide-react';
 
 export const TeacherAssignments: React.FC = () => {
   const [assignments, setAssignments] = useState<any[]>([]);
