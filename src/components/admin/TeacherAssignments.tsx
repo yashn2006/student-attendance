@@ -29,6 +29,11 @@ export const TeacherAssignments: React.FC = () => {
     fetchData();
   };
 
+  const handleDelete = async (id: string) => {
+    await supabase.from('class_subject_teachers').delete().eq('id', id);
+    fetchData();
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex gap-2">
@@ -39,7 +44,7 @@ export const TeacherAssignments: React.FC = () => {
       </div>
       <table className="w-full text-left border-collapse">
         <thead className="text-[11px] text-slate-500 uppercase">
-          <tr><th className="p-3">Class</th><th className="p-3">Subject</th><th className="p-3">Teacher</th></tr>
+          <tr><th className="p-3">Class</th><th className="p-3">Subject</th><th className="p-3">Teacher</th><th className="p-3">Actions</th></tr>
         </thead>
         <tbody className="divide-y text-xs">
           {assignments.map(a => (
@@ -47,6 +52,7 @@ export const TeacherAssignments: React.FC = () => {
               <td className="p-3">{a.classes?.name} — {a.classes?.section}</td>
               <td className="p-3">{a.subjects?.name}</td>
               <td className="p-3">{a.teachers?.name}</td>
+              <td className="p-3"><button onClick={() => handleDelete(a.id)} className="text-rose-600"><Trash2 className="w-4 h-4"/></button></td>
             </tr>
           ))}
         </tbody>

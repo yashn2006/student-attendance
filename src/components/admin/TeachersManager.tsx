@@ -35,6 +35,14 @@ export const TeachersManager: React.FC = () => {
     fetchTeachers();
   };
 
+  const handleDelete = async (id: string) => {
+    // Basic safety: Don't delete self (though identifying self requires current user ID)
+    if (confirm('Are you sure? This will delete the teacher row.')) {
+        await supabase.from('teachers').delete().eq('id', id);
+        fetchTeachers();
+    }
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex gap-2">
@@ -45,7 +53,7 @@ export const TeachersManager: React.FC = () => {
       </div>
       <table className="w-full text-left border-collapse">
         <thead className="text-[11px] text-slate-500 uppercase">
-          <tr><th className="p-3">Name</th><th className="p-3">Email</th><th className="p-3">Admin</th></tr>
+          <tr><th className="p-3">Name</th><th className="p-3">Email</th><th className="p-3">Admin</th><th className="p-3">Actions</th></tr>
         </thead>
         <tbody className="divide-y text-xs">
           {teachers.map(t => (
@@ -56,6 +64,9 @@ export const TeachersManager: React.FC = () => {
                 <button onClick={() => toggleAdmin(t.id, t.is_admin)} className={t.is_admin ? "text-emerald-600" : "text-slate-400"}>
                   {t.is_admin ? <Shield className="w-4 h-4"/> : <ShieldAlert className="w-4 h-4"/>}
                 </button>
+              </td>
+              <td className="p-3">
+                  <button onClick={() => handleDelete(t.id)} className="text-rose-600"><Trash2 className="w-4 h-4"/></button>
               </td>
             </tr>
           ))}
