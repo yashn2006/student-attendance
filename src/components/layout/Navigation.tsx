@@ -63,7 +63,7 @@ export const Navigation: React.FC<NavigationProps> = ({
   onOpenNotifications,
   unreadNotifCount
 }) => {
-  const { user, switchAccountRole } = useAuth();
+  const { user } = useAuth();
   const [isMoreSheetOpen, setIsMoreSheetOpen] = useState(false);
 
   const handleTabClick = (tabId: string) => {
@@ -165,20 +165,9 @@ export const Navigation: React.FC<NavigationProps> = ({
               Cmd+K
             </kbd>
           </button>
-
-          {/* Account Role Switcher Toggle */}
-            <button
-            onClick={() => switchAccountRole(user.isClassTeacher ? 'normal_professor' : 'class_teacher')}
-            className="w-full py-2.5 px-3 rounded-xl bg-[#12A176]/12 hover:bg-[#12A176]/20 border border-[#12A176]/30 text-[#12A176] text-xs font-extrabold flex items-center justify-between transition-colors cursor-pointer tap-active"
-          >
-            <span>Switch Role</span>
-            <span className="text-[10px] font-mono uppercase bg-[#12A176] px-2 py-0.5 rounded text-white font-black">
-              {user.isClassTeacher ? '→ Professor' : '→ Class Teacher'}
-            </span>
-          </button>
-
         </div>
       </aside>
+
 
       {/* MOBILE NATIVE BOTTOM TAB BAR */}
       <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-[#E5F5EE]/95 backdrop-blur-xl text-[#14201B] border-t border-[#DCEAE3] z-40 px-3 pt-2.5 pb-[max(0.75rem,env(safe-area-inset-bottom,0px))] flex items-center justify-between select-none shadow-lg">
@@ -383,7 +372,7 @@ export const Navigation: React.FC<NavigationProps> = ({
                 </div>
 
                 {/* Quick Utility Actions Bar */}
-                <div className="pt-2 border-t border-slate-200 dark:border-slate-800 grid grid-cols-2 gap-2.5">
+                <div className="pt-2 border-t border-slate-200 dark:border-slate-800 grid grid-cols-1 gap-2.5">
                   <button
                     onClick={() => {
                       onOpenCommandPalette();
@@ -397,24 +386,6 @@ export const Navigation: React.FC<NavigationProps> = ({
                     <div>
                       <span className="text-xs font-black block text-slate-900 dark:text-slate-100">Command Palette</span>
                       <span className="text-[10px] text-slate-500 dark:text-slate-400">Press Cmd + K</span>
-                    </div>
-                  </button>
-
-                  <button
-                    onClick={() => {
-                      switchAccountRole(user.isClassTeacher ? 'normal_professor' : 'class_teacher');
-                      setIsMoreSheetOpen(false);
-                    }}
-                    className="p-3 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/50 rounded-xl flex items-center gap-3 text-left hover:border-emerald-500 transition-colors cursor-pointer"
-                  >
-                    <div className="w-8 h-8 rounded-lg bg-emerald-600 text-white flex items-center justify-center font-bold shadow-xs">
-                      <ShieldCheck className="w-4 h-4" />
-                    </div>
-                    <div>
-                      <span className="text-xs font-black block text-emerald-700 dark:text-emerald-400">Switch Role</span>
-                      <span className="text-[10px] text-emerald-600/80 dark:text-emerald-300/80">
-                        {user.isClassTeacher ? '→ Professor' : '→ Class Teacher'}
-                      </span>
                     </div>
                   </button>
                 </div>

@@ -34,10 +34,6 @@ export const ProfileSettingsView: React.FC = () => {
   const { isOnline, queuedActions, clearQueue } = useOffline();
   const { theme: selectedTheme, setTheme } = useTheme();
 
-  // Role switching
-  const [activeRole, setActiveRole] = useState<'class_teacher' | 'subject_teacher'>('class_teacher');
-  const switchRole = (role: 'class_teacher' | 'subject_teacher') => setActiveRole(role);
-
   // Settings State
   const [hapticFeedback, setHapticFeedback] = useState(true);
   const [ambientGlow, setAmbientGlow] = useState(true);
@@ -141,21 +137,11 @@ export const ProfileSettingsView: React.FC = () => {
           <div className="space-y-3 text-xs">
             <div className="p-3.5 bg-[#FBF9F4] rounded-2xl border border-[#E8E3D9] flex items-center justify-between">
               <div>
-                <span className="font-extrabold text-[#1A1025] block">Active Account Role</span>
+                <span className="font-extrabold text-[#1A1025] block">Assigned Account Role</span>
                 <span className="text-[11px] text-[#6B6478] font-medium">
-                  {activeRole === 'class_teacher' ? 'Class Teacher (SYBSc IT Class In-Charge)' : 'Subject Professor (Data Structures)'}
+                  {user?.isClassTeacher ? 'Class Teacher (SYBSc IT Class In-Charge)' : 'Subject Professor'}
                 </span>
               </div>
-
-              <button
-                onClick={() => {
-                  switchRole(activeRole === 'class_teacher' ? 'subject_teacher' : 'class_teacher');
-                  showToast(`Switched active role to ${activeRole === 'class_teacher' ? 'Subject Professor' : 'Class Teacher'}`);
-                }}
-                className="px-3.5 py-2 bg-[#1A1025] text-[#A3E635] font-extrabold text-[11px] rounded-xl hover:bg-[#251738] transition-all tap-active cursor-pointer"
-              >
-                Switch Role
-              </button>
             </div>
 
             <div className="p-3.5 bg-[#FBF9F4] rounded-2xl border border-[#E8E3D9]">
@@ -168,7 +154,7 @@ export const ProfileSettingsView: React.FC = () => {
                       <span className="font-bold text-[#1A1025]">{sub.name}</span>
                     </div>
                     <span className="text-[10px] font-mono font-bold bg-[#FBF9F4] px-2 py-0.5 rounded border border-[#E8E3D9]">
-                      {sub.code} • {sub.className}
+                      {sub.code}
                     </span>
                   </li>
                 ))}
