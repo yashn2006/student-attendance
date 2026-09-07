@@ -1,0 +1,132 @@
+import React, { useState, useEffect } from 'react';
+import { supabase } from '../../lib/supabase';
+import { Trash2, Plus, AlertCircle } from 'lucide-react';
+
+export const TimetableManager: React.FC = () => {
+  const [slots, setSlots] = useState<any[]>([]);
+  const [classes, setClasses] = useState<any[]>([]);
+  const [periods, setPeriods] = useState<any[]>([]);
+  const [subjects, setSubjects] = useState<any[]>([]);
+  const [teachers, setTeachers] = useState<any[]>([]);
+  const [error, setError] = useState('');
+
+  // Form State
+  const [formData, setFormData] = useState({
+    day_of_week: 'Mon',
+    period_id: '',
+    class_id: '',
+    subject_id: '',
+    teacher_id: '',
+    room: '',
+    type: 'Lecture'
+  });
+
+  // Filters
+  const [filterType, setFilterType] = useState<'class' | 'teacher'>('class');
+  const [filterId, setFilterId] = useState('');
+
+  useEffect(() => { fetchData(); }, []);
+
+  const fetchData = async () => {
+    const { data: sData } = await supabase.from('timetable_slots').select('*, classes(*), subjects(*), teachers(*), periods(*)');
+    const { data: cData } = await supabase.from('classes').select('id, name, section, class_type');
+    const { data: pData } = await supabase.from('periods').select('*').order('start_time');
+    const { data: subData } = await supabase.from('subjects').select('id, name');
+    const { data: tData } = await supabase.from('teachers').select('id, name');
+    
+    if (sData) setSlots(sData);
+    if (cData) setClasses(cData);
+    if (pData) setPeriods(pData);
+    if (subData) setSubjects(subData);
+    if (tData) setTeachers(tData);
+  };
+
+  const handleAdd = async () => {
+    setError('');
+    const { error: insertError } = await supabase.from('timetable_slots').insert(formData);
+    
+    if (insertError) {
+      if (insertError.message.includes('teacher') && insertError.message.includes('booked')) {
+        setError('This teacher already has a class in this period');
+      } else if (insertError.message.includes('room') && insertError.message.includes('booked')) {
+        setError('This room is already booked in this period');
+      } else {
+        setError('Failed to book slot: ' + insertError.message);
+      }
+      return;
+    }
+    fetchData();
+  };
+
+  const handleDelete = async (id: string) => {
+    await supabase.from('timetable_slots').delete().eq('id', id);
+    fetchData();
+  };
+
+  const filteredSlots = slots.filter(s => {
+    if (!filterId) return true;
+    return filterType === 'class' ? s.class_id === filterId : s.teacher_id === filterId;
+  });
+
+  return (
+    <div className="space-y-6">
+      {/* Form */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 glass-card p-4 rounded-2xl">
+        <select onChange={e => setFormData({...formData, day_of_week: e.target.value})} className="border p-2 rounded-lg text-xs">
+          {['Mon','Tue','Wed','Thu','Fri','Sat'].map(d => <option key={d} value={d}>{d}</option>)}
+        </select>
+        <select onChange={e => setFormData({...formData, period_id: e.target.value})} className="border p-2 rounded-lg text-xs">
+          <option value="">Period</option>
+          {periods.filter(p => !p.is_break).map(p => <option key={p.id} value={p.id}>{p.start_time} - {p.end_time}</option>)}
+        </select>
+        <select onChange={e => setFormData({...formData, class_id: e.target.value})} className="border p-2 rounded-lg text-xs">
+          <option value="">Class</option>
+          {classes.map(c => <option key={c.id} value={c.id}>{c.name} ({c.class_type})</option>)}
+        </select>
+        <select onChange={e => setFormData({...formData, subject_id: e.target.value})} className="border p-2 rounded-lg text-xs">
+          <option value="">Subject</option>
+          {subjects.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+        </select>
+        <select onChange={e => setFormData({...formData, teacher_id: e.target.value})} className="border p-2 rounded-lg text-xs">
+          <option value="">Teacher</option>
+          {teachers.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+        </select>
+        <input placeholder="Room" onChange={e => setFormData({...formData, room: e.target.value})} className="border p-2 rounded-lg text-xs"/>
+        <button onClick={handleAdd} className="bg-emerald-600 text-white px-4 py-2 rounded-lg text-xs font-bold flex items-center justify-center"><Plus className="w-4 h-4"/>Book</button>
+        {error && <p className="text-rose-600 text-[10px] col-span-full flex items-center gap-1"><AlertCircle className="w-3 h-3"/>{error}</p>}
+      </div>
+
+      {/* Grid */}
+      <div className="overflow-x-auto glass-card rounded-2xl">
+        <table className="w-full text-left border-collapse text-[10px]">
+          <thead>
+            <tr className="bg-slate-50 border-b">
+              <th className="p-2">Period</th>
+              {['Mon','Tue','Wed','Thu','Fri','Sat'].map(d => <th key={d} className="p-2">{d}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {periods.map(p => (
+              <tr key={p.id} className="border-b">
+                <td className="p-2 font-bold">{p.is_break ? 'Break' : `${p.start_time}`}</td>
+                {!p.is_break ? (
+                  ['Mon','Tue','Wed','Thu','Fri','Sat'].map(d => (
+                    <td key={d} className="p-1 align-top">
+                      {filteredSlots.filter(s => s.day_of_week === d && s.period_id === p.id).map(s => (
+                        <div key={s.id} className="bg-indigo-50 border border-indigo-100 p-1 mb-1 rounded text-[9px]">
+                          <div>{s.subjects?.name}</div>
+                          <div className="font-bold">{s.classes?.name} - {s.teachers?.name}</div>
+                          <button onClick={() => handleDelete(s.id)} className="text-rose-500"><Trash2 className="w-3 h-3"/></button>
+                        </div>
+                      ))}
+                    </td>
+                  ))
+                ) : <td colSpan={6} className="bg-slate-100 p-2 text-center text-slate-500">Break Period</td>}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};

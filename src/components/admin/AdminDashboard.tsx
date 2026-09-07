@@ -4,10 +4,11 @@ import { ClassesManager } from './ClassesManager';
 import { TeacherAssignments } from './TeacherAssignments';
 import { ClassRoster } from './ClassRoster';
 import { TeachersManager } from './TeachersManager';
-import { BookOpen, Users, UserPlus, GraduationCap, UserCog } from 'lucide-react';
+import { TimetableManager } from './TimetableManager';
+import { BookOpen, Users, UserPlus, GraduationCap, UserCog, Calendar } from 'lucide-react';
 
 export const AdminDashboard: React.FC = () => {
-  const [activeAdminTab, setActiveAdminTab] = useState<'subjects' | 'classes' | 'assignments' | 'roster' | 'teachers'>('subjects');
+  const [activeAdminTab, setActiveAdminTab] = useState<'subjects' | 'classes' | 'assignments' | 'roster' | 'teachers' | 'timetable'>('subjects');
 
   const tabs = [
     { id: 'subjects', label: 'Subjects', icon: BookOpen },
@@ -15,6 +16,7 @@ export const AdminDashboard: React.FC = () => {
     { id: 'assignments', label: 'Teacher Assignments', icon: UserPlus },
     { id: 'roster', label: 'Class Roster', icon: GraduationCap },
     { id: 'teachers', label: 'Teachers', icon: UserCog },
+    { id: 'timetable', label: 'Timetable', icon: Calendar },
   ];
 
   return (
@@ -47,6 +49,7 @@ export const AdminDashboard: React.FC = () => {
         {activeAdminTab === 'assignments' && <TeacherAssignments />}
         {activeAdminTab === 'roster' && <ClassRoster />}
         {activeAdminTab === 'teachers' && <TeachersManager />}
+        {activeAdminTab === 'timetable' && <TimetableManager />}
       </div>
     </div>
   );
