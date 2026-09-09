@@ -10,15 +10,15 @@ export const TimetableManager: React.FC = () => {
   const [teachers, setTeachers] = useState<any[]>([]);
   const [error, setError] = useState('');
 
-  // Form State
+    // Form State
   const [formData, setFormData] = useState({
-    day_of_week: 'Mon',
+    day_of_week: 1, 
     period_id: '',
     class_id: '',
     subject_id: '',
     teacher_id: '',
     room: '',
-    type: 'Lecture'
+    type: 'lecture' // Changed default to lowercase
   });
 
   // Filters
@@ -43,7 +43,20 @@ export const TimetableManager: React.FC = () => {
 
   const handleAdd = async () => {
     setError('');
-    const { error: insertError } = await supabase.from('timetable_slots').insert(formData);
+    
+    // Validate required fields
+    if (!formData.period_id || !formData.class_id || !formData.subject_id || !formData.teacher_id) {
+        setError('Please fill in all required fields.');
+        return;
+    }
+
+    // Ensure day_of_week is a number
+    const submissionData = {
+      ...formData,
+      day_of_week: Number(formData.day_of_week)
+    };
+    
+    const { error: insertError } = await supabase.from('timetable_slots').insert(submissionData);
     
     if (insertError) {
       if (insertError.message.includes('teacher') && insertError.message.includes('booked')) {
@@ -72,26 +85,37 @@ export const TimetableManager: React.FC = () => {
     <div className="space-y-6">
       {/* Form */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2 glass-card p-4 rounded-2xl">
-        <select onChange={e => setFormData({...formData, day_of_week: e.target.value})} className="border p-2 rounded-lg text-xs">
-          {['Mon','Tue','Wed','Thu','Fri','Sat'].map(d => <option key={d} value={d}>{d}</option>)}
+        <select value={formData.day_of_week} onChange={e => setFormData({...formData, day_of_week: Number(e.target.value)})} className="border p-2 rounded-lg text-xs">
+          {[
+            {label: 'Monday', value: 1},
+            {label: 'Tuesday', value: 2},
+            {label: 'Wednesday', value: 3},
+            {label: 'Thursday', value: 4},
+            {label: 'Friday', value: 5},
+            {label: 'Saturday', value: 6}
+          ].map(d => <option key={d.value} value={d.value}>{d.label}</option>)}
         </select>
-        <select onChange={e => setFormData({...formData, period_id: e.target.value})} className="border p-2 rounded-lg text-xs">
-          <option value="">Period</option>
+        <select value={formData.period_id} onChange={e => setFormData({...formData, period_id: e.target.value})} className="border p-2 rounded-lg text-xs">
+          <option value="" disabled>Select Period</option>
           {periods.filter(p => !p.is_break).map(p => <option key={p.id} value={p.id}>{p.start_time} - {p.end_time}</option>)}
         </select>
-        <select onChange={e => setFormData({...formData, class_id: e.target.value})} className="border p-2 rounded-lg text-xs">
-          <option value="">Class</option>
+        <select value={formData.class_id} onChange={e => setFormData({...formData, class_id: e.target.value})} className="border p-2 rounded-lg text-xs">
+          <option value="" disabled>Select Class</option>
           {classes.map(c => <option key={c.id} value={c.id}>{c.name} ({c.class_type})</option>)}
         </select>
-        <select onChange={e => setFormData({...formData, subject_id: e.target.value})} className="border p-2 rounded-lg text-xs">
-          <option value="">Subject</option>
+        <select value={formData.subject_id} onChange={e => setFormData({...formData, subject_id: e.target.value})} className="border p-2 rounded-lg text-xs">
+          <option value="" disabled>Select Subject</option>
           {subjects.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
         </select>
-        <select onChange={e => setFormData({...formData, teacher_id: e.target.value})} className="border p-2 rounded-lg text-xs">
-          <option value="">Teacher</option>
+        <select value={formData.teacher_id} onChange={e => setFormData({...formData, teacher_id: e.target.value})} className="border p-2 rounded-lg text-xs">
+          <option value="" disabled>Select Teacher</option>
           {teachers.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
         </select>
         <input placeholder="Room" onChange={e => setFormData({...formData, room: e.target.value})} className="border p-2 rounded-lg text-xs"/>
+        <select value={formData.type} onChange={e => setFormData({...formData, type: e.target.value})} className="border p-2 rounded-lg text-xs">
+          <option value="lecture">Lecture</option>
+          <option value="practical">Practical</option>
+        </select>
         <button onClick={handleAdd} className="bg-emerald-600 text-white px-4 py-2 rounded-lg text-xs font-bold flex items-center justify-center"><Plus className="w-4 h-4"/>Book</button>
         {error && <p className="text-rose-600 text-[10px] col-span-full flex items-center gap-1"><AlertCircle className="w-3 h-3"/>{error}</p>}
       </div>
@@ -110,7 +134,7 @@ export const TimetableManager: React.FC = () => {
               <tr key={p.id} className="border-b">
                 <td className="p-2 font-bold">{p.is_break ? 'Break' : `${p.start_time}`}</td>
                 {!p.is_break ? (
-                  ['Mon','Tue','Wed','Thu','Fri','Sat'].map(d => (
+                  [1, 2, 3, 4, 5, 6].map(d => (
                     <td key={d} className="p-1 align-top">
                       {filteredSlots.filter(s => s.day_of_week === d && s.period_id === p.id).map(s => (
                         <div key={s.id} className="bg-indigo-50 border border-indigo-100 p-1 mb-1 rounded text-[9px]">
@@ -121,7 +145,7 @@ export const TimetableManager: React.FC = () => {
                       ))}
                     </td>
                   ))
-                ) : <td colSpan={6} className="bg-slate-100 p-2 text-center text-slate-500">Break Period</td>}
+                ) : <td colSpan={7} className="bg-slate-100 p-2 text-center text-slate-500">Break Period</td>}
               </tr>
             ))}
           </tbody>
