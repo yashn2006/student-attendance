@@ -126,22 +126,28 @@ export const TimetableBuilderView: React.FC = () => {
       semester: selectedSemester
     };
 
+    console.log('Attempting to save timetable slot with payload:', payload);
+
     let result;
     if (formData.id) {
+      console.log('Updating existing slot:', formData.id);
       result = await supabase.from('timetable_slots').update(payload).eq('id', formData.id);
     } else {
-      result = await supabase.from('timetable_slots').insert(payload);
+      console.log('Inserting new slot');
+      result = await supabase.from('timetable_slots').insert([payload]); // Wrapped in array
     }
 
     if (result.error) {
+      console.error('Supabase save error:', result.error);
       if (result.error.message.includes('teacher') || result.error.code === '23505') {
         setError('Schedule Conflict: Teacher or Room already booked for this period.');
       } else {
-        setError('Failed to save: ' + result.error.message);
+        setError('Failed to save: ' + (result.error.message || JSON.stringify(result.error)));
       }
       return;
     }
 
+    console.log('Save successful');
     setIsSlotModalOpen(false);
     fetchTimetable();
   };
@@ -441,18 +447,20 @@ export const TimetableBuilderView: React.FC = () => {
               <div className="col-span-2">
                 <label className="block font-bold mb-1">Subject</label>
                 <select 
+                  required
                   value={formData.subject_id}
                   onChange={e => setFormData({...formData, subject_id: e.target.value})}
                   className="w-full p-2 border rounded-xl"
                 >
                   <option value="" disabled>Select Subject</option>
-                  {subjects.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  {subjects.map(s => <option key={s.id} value={s.id}>{s.name} ({s.code})</option>)}
                 </select>
               </div>
 
               <div className="col-span-2">
                 <label className="block font-bold mb-1">Teacher</label>
                 <select 
+                  required
                   value={formData.teacher_id}
                   onChange={e => setFormData({...formData, teacher_id: e.target.value})}
                   className="w-full p-2 border rounded-xl"
