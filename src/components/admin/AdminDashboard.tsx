@@ -4,7 +4,7 @@ import { ClassesManager } from './ClassesManager';
 import { TeacherAssignments } from './TeacherAssignments';
 import { ClassRoster } from './ClassRoster';
 import { TeachersManager } from './TeachersManager';
-import { TimetableManager } from './TimetableManager';
+import { TimetableBuilderView } from '../timetable/TimetableBuilderView';
 import { BookOpen, Users, UserPlus, GraduationCap, UserCog, Calendar } from 'lucide-react';
 
 export const AdminDashboard: React.FC = () => {
@@ -49,7 +49,7 @@ export const AdminDashboard: React.FC = () => {
         {activeAdminTab === 'assignments' && <TeacherAssignments />}
         {activeAdminTab === 'roster' && <ClassRoster />}
         {activeAdminTab === 'teachers' && <TeachersManager />}
-        {activeAdminTab === 'timetable' && <TimetableManager />}
+        {activeAdminTab === 'timetable' && <TimetableBuilderView />}
       </div>
     </div>
   );
