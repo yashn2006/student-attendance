@@ -85,9 +85,14 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
   };
 
   const startSession = async (classId: string, teacherId: string, className: string) => {
+    const requestBody = { classId, teacherId };
+    console.log('[SessionContext] Calling session-start with:', requestBody);
+    
     const { data, error } = await supabase.functions.invoke('session-start', {
-      body: { classId, teacherId },
+      body: requestBody,
     });
+
+    console.log('[SessionContext] session-start response:', { data, error });
 
     if (error) {
       console.error('[SessionContext] session-start failed:', error);

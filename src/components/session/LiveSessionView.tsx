@@ -45,10 +45,11 @@ export const LiveSessionView: React.FC = () => {
         });
         const data = await response.json();
         console.log('class-list status:', response.status, 'data:', data);
-        if (response.ok) {
-          setClasses(data);
+        if (response.ok && data.status === 'ok' && Array.isArray(data.classes)) {
+          setClasses(data.classes);
         } else {
           setStartError(`Failed to fetch classes: ${data.error || response.statusText}`);
+          setClasses([]);
         }
       } catch (err) {
         console.error('class-list fetch error:', err);
@@ -83,7 +84,7 @@ export const LiveSessionView: React.FC = () => {
   }, [classes, selectedClassId]);
 
   const selectedClass = useMemo(
-    () => classes.find((c) => c.id === selectedClassId) || null,
+    () => (Array.isArray(classes) ? classes.find((c) => c.id === selectedClassId) : null),
     [classes, selectedClassId]
   );
 
@@ -144,10 +145,10 @@ export const LiveSessionView: React.FC = () => {
           </p>
         </div>
 
-        {classes.length === 0 ? (
+        {Array.isArray(classes) && classes.length === 0 ? (
           <div className="p-4 rounded-xl bg-[#F8FDFB] border border-[#DCEAE3] text-xs text-[#5C6B63] font-medium flex items-center gap-2">
             <AlertCircle className="w-4 h-4 text-[#E0A23B]" />
-            No classes loaded yet. If this doesn't populate shortly, check that `class-list` is returning data.
+            No classes loaded yet.
           </div>
         ) : (
           <select
@@ -156,7 +157,7 @@ export const LiveSessionView: React.FC = () => {
             disabled={sessionActive}
             className="w-full md:w-96 px-4 py-3 rounded-xl bg-[#F8FDFB] border border-[#DCEAE3] text-sm font-bold text-[#14201B] focus:outline-none focus:border-[#12A176] disabled:opacity-60"
           >
-            {classes.map((c) => (
+            {Array.isArray(classes) && classes.map((c) => (
               <option key={c.id} value={c.id}>
                 {c.name} ({c.studentCount} students)
               </option>
