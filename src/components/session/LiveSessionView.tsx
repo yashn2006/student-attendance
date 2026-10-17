@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { useSession } from '../../context/SessionContext';
 import { useAuth } from '../../context/AuthContext';
+import { supabase } from '../../lib/supabase';
 import { SkeletonDashboardView } from '../common/Skeleton';
 import ComingSoon from '../common/ComingSoon';
 
@@ -27,8 +28,39 @@ export const LiveSessionView: React.FC = () => {
   const { user, loading } = useAuth();
   const { activeSession, attendanceRecords, startSession, endSession } = useSession();
 
+  const [classes, setClasses] = useState<any[]>([]);
+  const [classesLoading, setClassesLoading] = useState(true);
+
   const teacherId = user?.id || '';
-  const classes = user?.subjects || [];
+
+  useEffect(() => {
+    const fetchClasses = async () => {
+      setClassesLoading(true);
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/class-list`, {
+          headers: {
+            'Authorization': `Bearer ${session?.access_token}`,
+          },
+        });
+        const data = await response.json();
+        console.log('class-list status:', response.status, 'data:', data);
+        if (response.ok) {
+          setClasses(data);
+        } else {
+          setStartError(`Failed to fetch classes: ${data.error || response.statusText}`);
+        }
+      } catch (err) {
+        console.error('class-list fetch error:', err);
+        setStartError('Failed to fetch classes.');
+      } finally {
+        setClassesLoading(false);
+      }
+    };
+
+    if (user) fetchClasses();
+  }, [user]);
+
 
   const [selectedClassId, setSelectedClassId] = useState<string>('');
   const [activeTab, setActiveTab] = useState<'code_mode' | 'manual_rollcall'>('code_mode');

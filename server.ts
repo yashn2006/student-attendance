@@ -293,6 +293,26 @@ Return a structured JSON response with EXACTLY the following format:
     });
   });
 
+  // API 5: Class List
+  app.get('/api/class-list', (req, res) => {
+    // Return mock data for now
+    res.json([
+      { id: 'class_sybsc_it', name: 'SYBSc IT', studentCount: 150 }
+    ]);
+  });
+
+  // API 6: Session Start
+  app.post('/api/session-start', (req, res) => {
+    const { classId, teacherId } = req.body;
+    res.json({
+      sessionId: `sess_${Date.now()}`,
+      windowStart: new Date().toISOString(),
+      windowEnd: new Date(Date.now() + 3600000).toISOString(),
+      currentCode: '123456',
+      codeExpiresAt: new Date(Date.now() + 300000).toISOString()
+    });
+  });
+
   // Serve Vite in development or static dist in production
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({

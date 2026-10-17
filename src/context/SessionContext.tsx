@@ -89,6 +89,13 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
       body: { classId, teacherId },
     });
 
+    if (error) {
+      console.error('[SessionContext] session-start failed:', error);
+      if (error instanceof Error && 'context' in error) {
+        console.error('[SessionContext] session-start error context:', (error as any).context);
+      }
+    }
+
     if (error || !data?.sessionId) {
       return { error: error?.message || 'Failed to start session' };
     }
