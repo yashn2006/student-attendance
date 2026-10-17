@@ -23,6 +23,7 @@ import { ProfileSettingsView } from './components/profile/ProfileSettingsView';
 import { CommandPalette } from './components/command/CommandPalette';
 import { NotificationDrawer } from './components/notifications/NotificationDrawer';
 import { QuickActionModals } from './components/common/QuickActionModals';
+import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { SystemNotification } from './types';
 
 const MainAppContent: React.FC = () => {
@@ -164,46 +165,48 @@ const MainAppContent: React.FC = () => {
         />
 
         <main className="flex-1 p-3.5 md:p-8 max-w-7xl mx-auto w-full pb-28 md:pb-8">
-          <AnimatePresence mode="wait">
-            <motion.div
-              key={currentTab}
-              initial={{ opacity: 0, y: 10, scale: 0.99 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: -10, scale: 0.99 }}
-              transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
-            >
-              {currentTab === 'dashboard' && (
-                <DashboardView
-                  onNavigateTab={setCurrentTab}
-                  onOpenActionModal={(modalType) => setActiveQuickModal(modalType)}
-                />
-              )}
+          <ErrorBoundary>
+            <AnimatePresence mode="wait">
+              <motion.div
+                key={currentTab}
+                initial={{ opacity: 0, y: 10, scale: 0.99 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -10, scale: 0.99 }}
+                transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+              >
+                {currentTab === 'dashboard' && (
+                  <DashboardView
+                    onNavigateTab={setCurrentTab}
+                    onOpenActionModal={(modalType) => setActiveQuickModal(modalType)}
+                  />
+                )}
 
-              {currentTab === 'students' && <ClassStudentsView />}
+                {currentTab === 'students' && <ClassStudentsView />}
 
-              {currentTab === 'session' && <LiveSessionView />}
+                {currentTab === 'session' && <LiveSessionView />}
 
-              {currentTab === 'attendance_sheet' && <AttendanceSheetView />}
+                {currentTab === 'attendance_sheet' && <AttendanceSheetView />}
 
-              {currentTab === 'timetable' && <TimetableBuilderView />}
+                {currentTab === 'timetable' && <TimetableBuilderView />}
 
-              {currentTab === 'admin' && <AdminDashboard />}
+                {currentTab === 'admin' && <AdminDashboard />}
 
-              {currentTab === 'ai_analyzer' && <LectureAIAnalyzerView />}
+                {currentTab === 'ai_analyzer' && <LectureAIAnalyzerView />}
 
-              {currentTab === 'gradebook' && <GradebookView />}
+                {currentTab === 'gradebook' && <GradebookView />}
 
-              {currentTab === 'canteen_credits' && <CanteenCreditsHome />}
+                {currentTab === 'canteen_credits' && <CanteenCreditsHome />}
 
-              {currentTab === 'resources' && <ResourceLibraryView />}
+                {currentTab === 'resources' && <ResourceLibraryView />}
 
-              {currentTab === 'chat' && <FacultyChatView />}
+                {currentTab === 'chat' && <FacultyChatView />}
 
-              {currentTab === 'analytics' && <AnalyticsView />}
+                {currentTab === 'analytics' && <AnalyticsView />}
 
-              {currentTab === 'profile' && <ProfileSettingsView />}
-            </motion.div>
-          </AnimatePresence>
+                {currentTab === 'profile' && <ProfileSettingsView />}
+              </motion.div>
+            </AnimatePresence>
+          </ErrorBoundary>
         </main>
       </div>
 

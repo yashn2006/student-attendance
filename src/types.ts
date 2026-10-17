@@ -21,6 +21,8 @@ export interface Subject {
   id: string;
   name: string;
   code: string;
+  className?: string;
+  studentCount?: number;
 }
 
 export interface Class {

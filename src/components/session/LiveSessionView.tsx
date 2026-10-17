@@ -24,8 +24,11 @@ export const LiveSessionView: React.FC = () => {
     return () => clearTimeout(timer);
   }, []);
 
-  const { teacherId, classes } = useAuth();
+  const { user, loading } = useAuth();
   const { activeSession, attendanceRecords, startSession, endSession } = useSession();
+
+  const teacherId = user?.id || '';
+  const classes = user?.subjects || [];
 
   const [selectedClassId, setSelectedClassId] = useState<string>('');
   const [activeTab, setActiveTab] = useState<'code_mode' | 'manual_rollcall'>('code_mode');
@@ -54,8 +57,6 @@ export const LiveSessionView: React.FC = () => {
 
   const sessionActive = activeSession?.status === 'active';
 
-
-
   const handleStartSession = async () => {
     if (!teacherId) {
       setStartError('teacherId not loaded yet — reload the page and try again.');
@@ -81,8 +82,6 @@ export const LiveSessionView: React.FC = () => {
     await endSession(teacherId);
   };
 
-  
-
   const codeSecondsLeft = activeSession
     ? Math.max(0, Math.round((new Date(activeSession.codeExpiresAt).getTime() - now) / 1000))
     : 0;
@@ -95,7 +94,7 @@ export const LiveSessionView: React.FC = () => {
   const markedCount = attendanceRecords.length;
   const progressPercent = totalClassStudents > 0 ? Math.round((markedCount / totalClassStudents) * 100) : 0;
 
-  if (isLoading) {
+  if (loading || isLoading) {
     return <SkeletonDashboardView />;
   }
 
