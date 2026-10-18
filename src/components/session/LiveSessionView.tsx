@@ -169,11 +169,14 @@ export const LiveSessionView: React.FC = () => {
                 disabled={sessionActive}
                 className="w-full px-4 py-3 rounded-xl bg-[#F8FDFB] border border-[#DCEAE3] text-sm font-bold text-[#14201B] focus:outline-none focus:border-[#12A176] disabled:opacity-60"
               >
-                {Array.isArray(classes) && classes.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name} {c.section || ''} ({c.studentCount} students)
-                  </option>
-                ))}
+                {Array.isArray(classes) && classes.map((c) => {
+                  const sectionLabel = c.section === 'ALL' ? '· All divisions' : (c.section || '');
+                  return (
+                    <option key={c.id} value={c.id}>
+                      {c.name} {sectionLabel} ({c.studentCount} students)
+                    </option>
+                  );
+                })}
               </select>
             </div>
 
@@ -215,7 +218,7 @@ export const LiveSessionView: React.FC = () => {
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 p-5 rounded-xl bg-[#14201B] text-white shadow-sm">
           <div>
             <h3 className="text-xl font-bold text-white">
-              {selectedClass ? `${selectedClass.name} ${selectedClass.section || ''}` : 'No class selected'}
+              {selectedClass ? `${selectedClass.name} ${selectedClass.section === 'ALL' ? '· All divisions' : (selectedClass.section || '')}` : 'No class selected'}
               {sessionActive && selectedSubject && ` · ${selectedSubject.name}`}
             </h3>
             {sessionActive && (

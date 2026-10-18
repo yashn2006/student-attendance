@@ -3,7 +3,7 @@ import { supabase } from '../../lib/supabase';
 import { Trash2, Plus, AlertCircle } from 'lucide-react';
 
 const YEARS = ['FYIT', 'SYIT', 'TYIT'];
-const SECTIONS = ['A', 'B'];
+const SECTIONS = ['A', 'B', 'B1', 'B2', 'B3', 'ALL'];
 
 export const ClassesManager: React.FC = () => {
   const [classes, setClasses] = useState<any[]>([]);
@@ -67,7 +67,11 @@ export const ClassesManager: React.FC = () => {
             {YEARS.map(y => <option key={y} value={y}>{y}</option>)}
           </select>
           <select value={section} onChange={e => setSection(e.target.value)} className="border p-2 rounded-xl text-xs">
-            {SECTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+            {SECTIONS.map(s => (
+              <option key={s} value={s}>
+                {s === 'ALL' ? 'ALL (whole year)' : s}
+              </option>
+            ))}
           </select>
           <select value={teacherId} onChange={e => setTeacherId(e.target.value)} className="border p-2 rounded-xl text-xs">
             <option value="">Select Teacher</option>
