@@ -64,6 +64,7 @@ export const LiveSessionView: React.FC = () => {
 
 
   const [selectedClassId, setSelectedClassId] = useState<string>('');
+  const [selectedSubjectId, setSelectedSubjectId] = useState<string>('');
   const [activeTab, setActiveTab] = useState<'code_mode' | 'manual_rollcall'>('code_mode');
   const [startError, setStartError] = useState<string | null>(null);
   const [isStarting, setIsStarting] = useState(false);
@@ -88,6 +89,11 @@ export const LiveSessionView: React.FC = () => {
     [classes, selectedClassId]
   );
 
+  const selectedSubject = useMemo(
+    () => (selectedClass?.subjects ? selectedClass.subjects.find((s: any) => s.id === selectedSubjectId) : null),
+    [selectedClass, selectedSubjectId]
+  );
+
   const sessionActive = activeSession?.status === 'active';
 
   const handleStartSession = async () => {
@@ -102,7 +108,7 @@ export const LiveSessionView: React.FC = () => {
 
     setIsStarting(true);
     setStartError(null);
-    const { error } = await startSession(selectedClass.id, teacherId, selectedClass.name);
+    const { error } = await startSession(selectedClass.id, teacherId, selectedClass.name, selectedSubjectId || null);
     setIsStarting(false);
 
     if (error) {
@@ -141,7 +147,7 @@ export const LiveSessionView: React.FC = () => {
           </span>
           <h2 className="text-xl md:text-2xl font-bold text-[#14201B] tracking-tight">Select a Class</h2>
           <p className="text-xs text-[#5C6B63] font-medium mt-0.5">
-            Choose the class you're teaching right now, then start the session to generate a live rotating code.
+            Rotating 6-digit live code & QR for attendance
           </p>
         </div>
 
@@ -151,18 +157,50 @@ export const LiveSessionView: React.FC = () => {
             No classes loaded yet.
           </div>
         ) : (
-          <select
-            value={selectedClassId}
-            onChange={(e) => setSelectedClassId(e.target.value)}
-            disabled={sessionActive}
-            className="w-full md:w-96 px-4 py-3 rounded-xl bg-[#F8FDFB] border border-[#DCEAE3] text-sm font-bold text-[#14201B] focus:outline-none focus:border-[#12A176] disabled:opacity-60"
-          >
-            {Array.isArray(classes) && classes.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name} ({c.studentCount} students)
-              </option>
-            ))}
-          </select>
+          <div className="flex flex-col md:flex-row gap-4">
+            <div className="flex-1 max-w-md">
+              <label className="block text-[10px] font-black uppercase text-[#5C6B63] mb-1.5 ml-1">Class</label>
+              <select
+                value={selectedClassId}
+                onChange={(e) => {
+                  setSelectedClassId(e.target.value);
+                  setSelectedSubjectId('');
+                }}
+                disabled={sessionActive}
+                className="w-full px-4 py-3 rounded-xl bg-[#F8FDFB] border border-[#DCEAE3] text-sm font-bold text-[#14201B] focus:outline-none focus:border-[#12A176] disabled:opacity-60"
+              >
+                {Array.isArray(classes) && classes.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name} {c.section || ''} ({c.studentCount} students)
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {selectedClass?.subjects && selectedClass.subjects.length > 0 && (
+              <div className="flex-1 max-w-md">
+                <label className="block text-[10px] font-black uppercase text-[#5C6B63] mb-1.5 ml-1">Subject</label>
+                <select
+                  value={selectedSubjectId}
+                  onChange={(e) => setSelectedSubjectId(e.target.value)}
+                  disabled={sessionActive}
+                  className="w-full px-4 py-3 rounded-xl bg-[#F8FDFB] border border-[#DCEAE3] text-sm font-bold text-[#14201B] focus:outline-none focus:border-[#12A176] disabled:opacity-60"
+                >
+                  {selectedClass.isClassTeacher && (
+                    <option value="">No specific subject</option>
+                  )}
+                  {!selectedClass.isClassTeacher && (
+                    <option value="" disabled>Select a subject</option>
+                  )}
+                  {selectedClass.subjects.map((s: any) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name} ({s.code})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+          </div>
         )}
 
         {startError && (
@@ -177,7 +215,8 @@ export const LiveSessionView: React.FC = () => {
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 p-5 rounded-xl bg-[#14201B] text-white shadow-sm">
           <div>
             <h3 className="text-xl font-bold text-white">
-              {selectedClass ? selectedClass.name : 'No class selected'}
+              {selectedClass ? `${selectedClass.name} ${selectedClass.section || ''}` : 'No class selected'}
+              {sessionActive && selectedSubject && ` · ${selectedSubject.name}`}
             </h3>
             {sessionActive && (
               <p className="text-xs text-white/70 mt-0.5">
@@ -190,7 +229,7 @@ export const LiveSessionView: React.FC = () => {
             {!sessionActive ? (
               <button
                 onClick={handleStartSession}
-                disabled={isStarting || !selectedClass}
+                disabled={isStarting || !selectedClass || (!selectedClass.isClassTeacher && !selectedSubjectId)}
                 className="px-6 py-3 rounded-xl bg-[#12A176] hover:bg-[#0E8360] text-white font-bold text-xs shadow-sm flex items-center gap-2 transition-all cursor-pointer disabled:opacity-60"
               >
                 <Play className="w-4 h-4 fill-current" />

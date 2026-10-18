@@ -24,7 +24,7 @@ interface AttendanceRecordRow {
 interface SessionContextType {
   activeSession: ActiveSession | null;
   attendanceRecords: AttendanceRecordRow[];
-  startSession: (classId: string, teacherId: string, className: string) => Promise<{ error: string | null }>;
+  startSession: (classId: string, teacherId: string, className: string, subjectId?: string | null) => Promise<{ error: string | null }>;
   endSession: (teacherId: string) => Promise<void>;
 }
 
@@ -84,8 +84,8 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
     }, 5000);
   };
 
-  const startSession = async (classId: string, teacherId: string, className: string) => {
-    const requestBody = { classId, teacherId };
+  const startSession = async (classId: string, teacherId: string, className: string, subjectId?: string | null) => {
+    const requestBody = { classId, teacherId, subjectId };
     console.log('[SessionContext] Calling session-start with:', requestBody);
     
     const { data, error } = await supabase.functions.invoke('session-start', {
