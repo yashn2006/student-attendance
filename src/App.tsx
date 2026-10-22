@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { SessionProvider } from './context/SessionContext';
@@ -7,18 +7,11 @@ import { ThemeProvider } from './context/ThemeContext';
 import { Navigation } from './components/layout/Navigation';
 import { Header } from './components/layout/Header';
 import { LaunchBootScreen } from './components/auth/LaunchBootScreen';
-import { DashboardView } from './components/dashboard/DashboardView';
 import { LiveSessionView } from './components/session/LiveSessionView';
 import { AttendanceSheetView } from './components/attendance/AttendanceSheetView';
 import { TimetableBuilderView } from './components/timetable/TimetableBuilderView';
 import { AdminDashboard } from './components/admin/AdminDashboard';
-import { LectureAIAnalyzerView } from './components/ai/LectureAIAnalyzerView';
 import { ClassStudentsView } from './components/students/ClassStudentsView';
-import { GradebookView } from './components/gradebook/GradebookView';
-import { CanteenCreditsHome } from './canteen-credits/CanteenCreditsHome';
-import { ResourceLibraryView } from './components/resources/ResourceLibraryView';
-import { AnalyticsView } from './components/analytics/AnalyticsView';
-import { FacultyChatView } from './components/chat/FacultyChatView';
 import { ProfileSettingsView } from './components/profile/ProfileSettingsView';
 import { CommandPalette } from './components/command/CommandPalette';
 import { NotificationDrawer } from './components/notifications/NotificationDrawer';
@@ -27,42 +20,18 @@ import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { SystemNotification } from './types';
 
 const MainAppContent: React.FC = () => {
-  const { isAuthenticated, isBootComplete } = useAuth();
-  const [currentTab, setCurrentTab] = useState('dashboard');
+  const { user, isAuthenticated, isBootComplete } = useAuth();
+  const [currentTab, setCurrentTab] = useState('session');
   const [isCommandOpen, setIsCommandOpen] = useState(false);
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
   const [activeQuickModal, setActiveQuickModal] = useState<'announcement' | 'attendance' | 'leave' | null>(null);
 
   // Push notifications state
-  const [notifications, setNotifications] = useState<SystemNotification[]>([
-    {
-      id: 'notif_1',
-      title: 'Attendance Synced to Excel Matrix',
-      message: '98% attendance auto-transferred for Data Structures (Aug 04).',
-      timestamp: '10 mins ago',
-      type: 'success',
-      read: false,
-      actionLabel: 'View Attendance Sheet'
-    },
-    {
-      id: 'notif_2',
-      title: 'Urgent Defaulter Warning',
-      message: 'Aarav Sharma missed 3 consecutive lectures (<75% attendance).',
-      timestamp: '1 hour ago',
-      type: 'urgent',
-      read: false,
-      actionLabel: 'Issue Parent Alert'
-    },
-    {
-      id: 'notif_3',
-      title: 'Gemini AI Curriculum Insight',
-      message: 'Low topic mastery detected in Concurrency Control (35% average).',
-      timestamp: '2 hours ago',
-      type: 'warning',
-      read: true,
-      actionLabel: 'Analyze Notes'
-    }
-  ]);
+  const [notifications, setNotifications] = useState<SystemNotification[]>([]);
+
+  useEffect(() => {
+    if (isAuthenticated) setCurrentTab('session');
+  }, [isAuthenticated]);
 
   if (!isBootComplete || !isAuthenticated) {
     return <LaunchBootScreen />;
@@ -110,32 +79,20 @@ const MainAppContent: React.FC = () => {
 
   const getHeaderMeta = () => {
     switch (currentTab) {
-      case 'dashboard':
-        return { title: 'Faculty Operations Command', subtitle: 'Real-time student engagement & class snapshot' };
-      case 'students':
-        return { title: 'Class Roster (150 Students)', subtitle: 'Complete student directory for SYBSc IT' };
       case 'session':
-        return { title: 'Live Session & Encrypted QR', subtitle: '4-second QR code shuffling, 5-digit OTP & rapid manual roll call' };
+        return { title: 'Live Session & QR', subtitle: 'Live attendance code, QR check-in and session control' };
       case 'attendance_sheet':
-        return { title: 'Master Monthly Attendance Sheet', subtitle: 'Interactive Excel-like matrix, 1-click cell editing, defaulter waivers & CSV export' };
+        return { title: 'Attendance Sheet', subtitle: 'Verified check-ins and manual overrides per session' };
+      case 'students':
+        return { title: 'Student Directory', subtitle: 'Students enrolled in your classes' };
       case 'timetable':
-        return { title: 'Weekly Timetable Schedule', subtitle: 'Interactive lecture slot booking & room allocation' };
-      case 'ai_analyzer':
-        return { title: 'Gemini AI PDF Lecture Analyzer', subtitle: 'Server-side Gemini 3.6 Flash curriculum intelligence' };
-      case 'gradebook':
-        return { title: 'Gradebook & Assignments', subtitle: 'Inline evaluation & submission tracking' };
-      case 'canteen_credits':
-        return { title: 'Canteen Credits', subtitle: 'Your monthly meal allowance, digitized' };
-      case 'resources':
-        return { title: 'Course Resource Library', subtitle: 'Document uploads, lab manuals & video lectures' };
-      case 'chat':
-        return { title: 'Faculty & Student Channels', subtitle: 'Threaded messaging and departmental broadcasts' };
-      case 'analytics':
-        return { title: 'AI Student Analytics', subtitle: 'Topic mastery heatmaps & predictive care' };
+        return { title: 'Timetable', subtitle: 'Weekly schedule and slot booking' };
+      case 'admin':
+        return { title: 'Admin', subtitle: 'Classes, subjects, teachers and assignments' };
       case 'profile':
-        return { title: 'Profile & Role Management', subtitle: 'Class Teacher vs Professor account controls' };
+        return { title: 'Profile & Settings', subtitle: 'Account and application settings' };
       default:
-        return { title: 'Campus OS', subtitle: 'Faculty Intelligence Platform' };
+        return { title: 'Campus OS', subtitle: `${user?.name ?? ''} • ${user?.is_admin ? 'Admin' : 'Faculty'}`.trim() };
     }
   };
 
@@ -174,34 +131,15 @@ const MainAppContent: React.FC = () => {
                 exit={{ opacity: 0, y: -10, scale: 0.99 }}
                 transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
               >
-                {currentTab === 'dashboard' && (
-                  <DashboardView
-                    onNavigateTab={setCurrentTab}
-                    onOpenActionModal={(modalType) => setActiveQuickModal(modalType)}
-                  />
-                )}
-
-                {currentTab === 'students' && <ClassStudentsView />}
-
                 {currentTab === 'session' && <LiveSessionView />}
 
                 {currentTab === 'attendance_sheet' && <AttendanceSheetView />}
 
+                {currentTab === 'students' && <ClassStudentsView />}
+
                 {currentTab === 'timetable' && <TimetableBuilderView />}
 
                 {currentTab === 'admin' && <AdminDashboard />}
-
-                {currentTab === 'ai_analyzer' && <LectureAIAnalyzerView />}
-
-                {currentTab === 'gradebook' && <GradebookView />}
-
-                {currentTab === 'canteen_credits' && <CanteenCreditsHome />}
-
-                {currentTab === 'resources' && <ResourceLibraryView />}
-
-                {currentTab === 'chat' && <FacultyChatView />}
-
-                {currentTab === 'analytics' && <AnalyticsView />}
 
                 {currentTab === 'profile' && <ProfileSettingsView />}
               </motion.div>

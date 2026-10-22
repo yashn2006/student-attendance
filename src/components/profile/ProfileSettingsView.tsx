@@ -83,7 +83,7 @@ export const ProfileSettingsView: React.FC = () => {
 
         <div className="flex flex-col sm:flex-row items-center gap-5 text-center sm:text-left relative z-10">
           <div className="w-20 h-20 rounded-3xl bg-[#1A1025] text-[#A3E635] font-black text-2xl flex items-center justify-center ring-4 ring-[#8B5CF6]/30 shadow-xl shrink-0 glow-purple">
-            MS
+            {user?.avatar || user?.name?.slice(0, 2).toUpperCase() || 'F'}
           </div>
 
           <div>
@@ -92,12 +92,12 @@ export const ProfileSettingsView: React.FC = () => {
                 {user?.name}
               </h2>
               <span className="px-2.5 py-0.5 rounded-full bg-[#A3E635] text-[#1A1025] font-extrabold text-[10px]">
-                {user?.isClassTeacher ? 'Class Teacher' : 'Subject Professor'}
+                {user?.is_admin ? 'Admin' : 'Faculty'}
               </span>
             </div>
 
             <p className="text-xs text-[#6B6478] font-bold mt-1">
-              {user?.title || 'Faculty'} • {user?.department || 'Information Technology'}
+              {user?.is_admin ? 'Admin' : 'Faculty'} • {user?.department || 'Information Technology'}
             </p>
 
             <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2 mt-3">
@@ -105,7 +105,7 @@ export const ProfileSettingsView: React.FC = () => {
                 Faculty ID: {user?.facultyId}
               </span>
               <span className="text-[10px] font-extrabold bg-[#1A1025] text-white px-2.5 py-1 rounded-xl">
-                Class Scope: {user?.classTeacherClassName || 'SYBSc IT'}
+                {user?.email}
               </span>
             </div>
           </div>
@@ -139,7 +139,7 @@ export const ProfileSettingsView: React.FC = () => {
               <div>
                 <span className="font-extrabold text-[#1A1025] block">Assigned Account Role</span>
                 <span className="text-[11px] text-[#6B6478] font-medium">
-                  {user?.isClassTeacher ? 'Class Teacher (SYBSc IT Class In-Charge)' : 'Subject Professor'}
+                  {user?.is_admin ? 'Admin' : 'Faculty'}
                 </span>
               </div>
             </div>
@@ -301,7 +301,7 @@ export const ProfileSettingsView: React.FC = () => {
                 <span className="font-extrabold text-[#1A1025]">Defaulter Warning Limit</span>
                 <span className="font-black font-mono text-[#8B5CF6] text-sm">{defaulterThreshold}%</span>
               </div>
-              <p className="text-[10px] text-[#6B6478]">Students below this attendance percentage will be flagged red in Excel sheets and parent alerts.</p>
+              <p className="text-[10px] text-[#6B6478]">Students below this attendance percentage will be flagged red in attendance sheets and parent alerts.</p>
               <input
                 type="range"
                 min="50"

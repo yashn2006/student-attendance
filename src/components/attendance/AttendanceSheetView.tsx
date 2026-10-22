@@ -708,7 +708,7 @@ export const AttendanceSheetView: React.FC = () => {
           <div>
             <h2 className="text-xl font-bold text-[#14201B] tracking-tight">Attendance Sheet</h2>
             <p className="text-xs text-[#5C6B63] font-medium mt-0.5">
-              Verified check-ins and manual overrides for your class and subject.
+              Verified check-ins and manual overrides per session
             </p>
           </div>
         </div>

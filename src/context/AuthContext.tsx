@@ -48,7 +48,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       classTeacherClassName: '',
       isClassTeacher: false,
       avatar: data.name.slice(0, 2).toUpperCase(),
-      title: 'Faculty'
+      title: data.is_admin ? 'Admin' : 'Faculty'
     });
   };
 

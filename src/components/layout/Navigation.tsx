@@ -1,26 +1,17 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
-  LayoutDashboard,
   QrCode,
   Users,
   Calendar,
-  GraduationCap,
-  FolderKanban,
-  BarChart3,
-  MessageSquare,
   User,
   Sparkles,
   Command,
-  Bell,
   FileSpreadsheet,
-  Zap,
   Plus,
   Grid,
   X,
-  ChevronRight,
-  ShieldCheck,
-  Coffee
+  ShieldCheck
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 
@@ -33,19 +24,12 @@ export interface NavItem {
 }
 
 export const navItems: NavItem[] = [
-  { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, description: 'Class snapshot & analytics' },
-  { id: 'students', label: 'Student Directory', icon: Users, badge: '150', description: 'Complete roster for SYBSc IT' },
-  { id: 'session', label: 'Live Session & QR', icon: QrCode, description: '4s dynamic QR & 5-digit OTP' },
-  { id: 'attendance_sheet', label: 'Attendance Sheet', icon: FileSpreadsheet, badge: 'Excel', description: 'Monthly matrix & CSV export' },
+  { id: 'session', label: 'Live Session & QR', icon: QrCode, description: 'Live attendance code & QR' },
+  { id: 'attendance_sheet', label: 'Attendance Sheet', icon: FileSpreadsheet, description: 'Verified check-ins and manual overrides' },
+  { id: 'students', label: 'Student Directory', icon: Users, description: 'Students enrolled in your classes' },
   { id: 'timetable', label: 'Timetable', icon: Calendar, description: 'Weekly schedule & slot booking' },
-  { id: 'ai_analyzer', label: 'AI PDF Analyzer', icon: Sparkles, badge: 'Gemini', description: 'Curriculum & PDF intelligence' },
-  { id: 'gradebook', label: 'Gradebook', icon: GraduationCap, description: 'Assignments & grade evaluation' },
-  { id: 'canteen_credits', label: 'Canteen Credits', icon: Coffee, badge: 'Allowance', description: 'Monthly meal allowance & digital receipts' },
-  { id: 'resources', label: 'Resources', icon: FolderKanban, description: 'Lab manuals & lecture materials' },
-  { id: 'chat', label: 'Faculty Chat', icon: MessageSquare, description: 'Channels & broadcast messages' },
-  { id: 'analytics', label: 'Analytics', icon: BarChart3, description: 'Mastery heatmaps & defaulter flags' },
   { id: 'admin', label: 'Admin', icon: ShieldCheck, description: 'Admin panel' },
-  { id: 'profile', label: 'Profile & Settings', icon: User, description: 'Account roles, biometrics & PWA' }
+  { id: 'profile', label: 'Profile & Settings', icon: User, description: 'Account and app settings' }
 ];
 
 interface NavigationProps {
@@ -78,7 +62,7 @@ export const Navigation: React.FC<NavigationProps> = ({
         <div className="space-y-6 relative z-10">
           {/* Brand Logo */}
           <div className="flex items-center justify-between px-2">
-            <div className="flex items-center gap-3 cursor-pointer" onClick={() => handleTabClick('dashboard')}>
+            <div className="flex items-center gap-3 cursor-pointer" onClick={() => handleTabClick('session')}>
               <div className="w-10 h-10 rounded-2xl bg-[#12A176] flex items-center justify-center text-white font-black text-xl shadow-sm">
                 C
               </div>
@@ -97,18 +81,20 @@ export const Navigation: React.FC<NavigationProps> = ({
           <div className="p-3.5 rounded-2xl bg-white border border-[#DCEAE3] shadow-xs relative overflow-hidden">
             <div className="flex items-center gap-3 relative z-10">
               <div className="w-11 h-11 rounded-xl bg-[#12A176] text-white font-black text-sm flex items-center justify-center ring-2 ring-[#12A176]/30 shadow-xs shrink-0">
-                MS
+                {user.avatar || user.name.slice(0, 2).toUpperCase()}
               </div>
               <div className="min-w-0 flex-1">
                 <h4 className="text-sm font-extrabold text-[#14201B] truncate">{user.name}</h4>
-                <p className="text-xs text-[#5C6B63] font-semibold truncate">{user.title}</p>
+                <p className="text-xs text-[#5C6B63] font-semibold truncate">
+                  {user.is_admin ? 'Admin' : 'Faculty'}
+                </p>
               </div>
             </div>
 
             <div className="mt-3 pt-2.5 border-t border-[#DCEAE3] flex items-center justify-between text-xs relative z-10">
               <span className="text-[10px] font-extrabold uppercase text-[#5C6B63]">Account Role</span>
               <span className="px-2.5 py-0.5 rounded-full bg-[#12A176]/12 text-[#12A176] font-extrabold text-[10px]">
-              {user.isClassTeacher ? 'Class Teacher' : 'Subject Professor'}
+                {user.is_admin ? 'Admin' : 'Faculty'}
               </span>
             </div>
           </div>
@@ -171,15 +157,15 @@ export const Navigation: React.FC<NavigationProps> = ({
 
       {/* MOBILE NATIVE BOTTOM TAB BAR */}
       <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-[#E5F5EE]/95 backdrop-blur-xl text-[#14201B] border-t border-[#DCEAE3] z-40 px-3 pt-2.5 pb-[max(0.75rem,env(safe-area-inset-bottom,0px))] flex items-center justify-between select-none shadow-lg">
-        {/* Tab 1: Dashboard */}
+        {/* Tab 1: Students */}
         <button
-          onClick={() => handleTabClick('dashboard')}
+          onClick={() => handleTabClick('students')}
           className={`flex flex-col items-center justify-center py-1 px-2 rounded-xl transition-all cursor-pointer tap-active ${
-            currentTab === 'dashboard' ? 'text-[#12A176] font-extrabold scale-105' : 'text-[#5C6B63]'
+            currentTab === 'students' ? 'text-[#12A176] font-extrabold scale-105' : 'text-[#5C6B63]'
           }`}
         >
-          <LayoutDashboard className="w-5 h-5" />
-          <span className="text-[10px] mt-1 font-semibold">Home</span>
+          <Users className="w-5 h-5" />
+          <span className="text-[10px] mt-1 font-semibold">Students</span>
         </button>
 
         {/* Tab 2: Live QR */}
@@ -212,14 +198,14 @@ export const Navigation: React.FC<NavigationProps> = ({
           }`}
         >
           <FileSpreadsheet className="w-5 h-5" />
-          <span className="text-[10px] mt-1 font-semibold">Excel</span>
+          <span className="text-[10px] mt-1 font-semibold">Attendance</span>
         </button>
 
         {/* Tab 4: More / All Sections */}
         <button
           onClick={() => setIsMoreSheetOpen(true)}
           className={`flex flex-col items-center justify-center py-1 px-2 rounded-xl transition-all cursor-pointer tap-active ${
-            ['timetable', 'ai_analyzer', 'gradebook', 'canteen_credits', 'resources', 'chat', 'analytics', 'profile', 'students'].includes(currentTab)
+            ['timetable', 'admin', 'profile'].includes(currentTab)
               ? 'text-[#12A176] font-extrabold scale-105'
               : 'text-[#5C6B63]'
           }`}
@@ -262,7 +248,7 @@ export const Navigation: React.FC<NavigationProps> = ({
                       <h3 className="text-base font-black tracking-tight text-white font-['Plus_Jakarta_Sans']">
                         Campus OS Hub
                       </h3>
-                      <p className="text-xs text-slate-400 font-medium">12 active modules & rapid shortcuts</p>
+                      <p className="text-xs text-slate-400 font-medium">{navItems.length} modules & rapid shortcuts</p>
                     </div>
                   </div>
 

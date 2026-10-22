@@ -2,22 +2,18 @@ import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Search,
-  LayoutDashboard,
   Calendar,
-  GraduationCap,
-  FolderKanban,
-  MessageSquare,
-  Sparkles,
   Settings,
   QrCode,
   AlertTriangle,
-  User,
   X,
   FileText,
   Command,
-  Coffee
+  FileSpreadsheet,
+  Users,
+  ShieldCheck
 } from 'lucide-react';
-import { mockStudents, mockTimetable } from '../../data/mockData';
+import { useAuth } from '../../context/AuthContext';
 
 interface CommandPaletteProps {
   isOpen: boolean;
@@ -32,6 +28,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   onNavigateTab,
   onOpenQuickAction
 }) => {
+  const { user } = useAuth();
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
 
@@ -61,21 +58,10 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   // Filter items based on query
   const searchItems = [
     {
-      id: 'nav-dashboard',
-      category: 'Navigation',
-      title: 'Go to Master Dashboard',
-      subtitle: 'Overview of attendance, timetable, and faculty metrics',
-      icon: LayoutDashboard,
-      action: () => {
-        onNavigateTab('dashboard');
-        onClose();
-      }
-    },
-    {
       id: 'nav-session',
       category: 'Live Session',
-      title: 'Launch Live QR & 5-Digit OTP Session',
-      subtitle: 'Start, end, or restart live timetable session',
+      title: 'Live Session & QR',
+      subtitle: 'Start, end, or restart a live attendance session',
       icon: QrCode,
       action: () => {
         onNavigateTab('session');
@@ -83,68 +69,61 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       }
     },
     {
+      id: 'nav-attendance',
+      category: 'Navigation',
+      title: 'Attendance Sheet',
+      subtitle: 'Verified check-ins and manual overrides per session',
+      icon: FileSpreadsheet,
+      action: () => {
+        onNavigateTab('attendance_sheet');
+        onClose();
+      }
+    },
+    {
+      id: 'nav-students',
+      category: 'Navigation',
+      title: 'Student Directory',
+      subtitle: 'Students enrolled in your classes',
+      icon: Users,
+      action: () => {
+        onNavigateTab('students');
+        onClose();
+      }
+    },
+    {
       id: 'nav-timetable',
       category: 'Navigation',
-      title: 'Weekly Timetable Builder',
-      subtitle: 'Manage lecture schedules and room allocations',
+      title: 'Timetable',
+      subtitle: 'Weekly schedule and room allocations',
       icon: Calendar,
       action: () => {
         onNavigateTab('timetable');
         onClose();
       }
     },
+    ...(user?.is_admin
+      ? [
+          {
+            id: 'nav-admin',
+            category: 'Navigation',
+            title: 'Admin',
+            subtitle: 'Classes, subjects, teachers and assignments',
+            icon: ShieldCheck,
+            action: () => {
+              onNavigateTab('admin');
+              onClose();
+            }
+          }
+        ]
+      : []),
     {
-      id: 'nav-ai',
-      category: 'AI Tools',
-      title: 'Gemini AI Lecture PDF Analyzer',
-      subtitle: 'Extract summaries, 5 quiz questions, and remediation strategies',
-      icon: Sparkles,
-      action: () => {
-        onNavigateTab('ai_analyzer');
-        onClose();
-      }
-    },
-    {
-      id: 'nav-gradebook',
+      id: 'nav-profile',
       category: 'Navigation',
-      title: 'Gradebook & Assignments',
-      subtitle: 'Evaluate student submissions and grade trends',
-      icon: GraduationCap,
+      title: 'Profile & Settings',
+      subtitle: 'Account and application settings',
+      icon: Settings,
       action: () => {
-        onNavigateTab('gradebook');
-        onClose();
-      }
-    },
-    {
-      id: 'nav-canteen-credits',
-      category: 'Navigation',
-      title: 'Canteen Credits',
-      subtitle: 'View monthly meal allowance, deduct credits, and show digital receipt',
-      icon: Coffee,
-      action: () => {
-        onNavigateTab('canteen_credits');
-        onClose();
-      }
-    },
-    {
-      id: 'nav-resources',
-      category: 'Navigation',
-      title: 'Resource Library',
-      subtitle: 'Upload lecture slides, notes, and lab manuals',
-      icon: FolderKanban,
-      action: () => {
-        onNavigateTab('resources');
-        onClose();
-      }
-    },
-    {
-      id: 'nav-chat',
-      category: 'Navigation',
-      title: 'Faculty & Student Chat',
-      subtitle: 'Threaded department messaging and group channels',
-      icon: MessageSquare,
-      action: () => {
-        onNavigateTab('chat');
+        onNavigateTab('profile');
         onClose();
       }
     },
@@ -169,29 +148,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         onOpenQuickAction('defaulter_alert');
         onClose();
       }
-    },
-    ...mockStudents.map((student) => ({
-      id: `student-${student.id}`,
-      category: 'Students',
-      title: `${student.name} (${student.rollNo})`,
-      subtitle: `Attendance: ${student.overallAttendance}% • ${student.statusTag}`,
-      icon: User,
-      action: () => {
-        onNavigateTab('dashboard');
-        onClose();
-      }
-    })),
-    ...mockTimetable.map((slot) => ({
-      id: `slot-${slot.id}`,
-      category: 'Live Session',
-      title: `${slot.subjectName} (${slot.time})`,
-      subtitle: `${slot.room} • ${slot.type} • Status: ${slot.sessionStatus || 'Not Started'}`,
-      icon: Calendar,
-      action: () => {
-        onNavigateTab('session');
-        onClose();
-      }
-    }))
+    }
   ];
 
   const filteredItems = searchItems.filter(
@@ -240,7 +197,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
               }}
               onKeyDown={handleKeyDownInMenu}
               autoFocus
-              placeholder="Search students, timetable sessions, AI analyzer, or quick actions... (Cmd+K)"
+              placeholder="Search attendance, sessions, students, or quick actions... (Cmd+K)"
               className="w-full pl-8 pr-12 text-sm bg-transparent text-white placeholder-white/40 focus:outline-none font-medium"
             />
             <button

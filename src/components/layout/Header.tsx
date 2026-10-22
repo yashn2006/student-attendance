@@ -1,5 +1,5 @@
 import React from 'react';
-import { Bell, Zap, ShieldCheck } from 'lucide-react';
+import { Bell, Zap } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 
 interface HeaderProps {
@@ -38,16 +38,12 @@ export const Header: React.FC<HeaderProps> = ({
           {/* Active Account Role Tag */}
           <div className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-[#12A176]/12 text-[#12A176] shrink-0 border border-[#12A176]/20">
             <span className="w-1.5 h-1.5 rounded-full bg-[#12A176] animate-pulse" />
-            <span>
-              {user.isClassTeacher
-                ? `Class Teacher (${user.classTeacherClassName || 'SYBSc IT'})`
-                : `Subject Professor (${user.subjects?.[0]?.name || 'Networks'})`}
-            </span>
+            <span>{user.is_admin ? 'Admin' : 'Faculty'}</span>
           </div>
         </div>
 
         <p className="text-[11px] md:text-xs text-[#5C6B63] font-semibold truncate mt-0.5">
-          {subtitle || `${user.department || 'Department'} • ${user.name}`}
+          {subtitle || `${user.name} • ${user.is_admin ? 'Admin' : 'Faculty'}`}
         </p>
       </div>
 
@@ -88,10 +84,12 @@ export const Header: React.FC<HeaderProps> = ({
         >
           <div className="hidden lg:flex flex-col items-end text-right">
             <span className="text-xs font-black text-[#14201B] leading-tight">{user.name}</span>
-            <span className="text-[10px] font-extrabold text-[#12A176]">SYBSc IT Scope</span>
+            <span className="text-[10px] font-extrabold text-[#12A176]">
+              {user.is_admin ? 'Admin' : 'Faculty'}
+            </span>
           </div>
           <div className="w-8 h-8 md:w-9 md:h-9 rounded-xl bg-[#12A176] text-white font-black text-xs flex items-center justify-center ring-2 ring-[#12A176]/30 shadow-xs shrink-0">
-            MS
+            {user.avatar || user.name.slice(0, 2).toUpperCase()}
           </div>
         </button>
       </div>
