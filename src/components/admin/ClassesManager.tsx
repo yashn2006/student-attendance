@@ -55,7 +55,17 @@ export const ClassesManager: React.FC = () => {
   };
 
   const handleDelete = async (id: string) => {
-    await supabase.from('classes').delete().eq('id', id);
+    setError('');
+    const { error: deleteError } = await supabase.from('classes').delete().eq('id', id);
+    if (deleteError) {
+      console.error('Class delete error:', deleteError);
+      if (deleteError.code === '23503' || deleteError.message.toLowerCase().includes('foreign key')) {
+        setError('This class is still in use (teacher assignments, enrolled students, sessions or timetable slots). Remove those first.');
+      } else {
+        setError('Failed to delete class: ' + deleteError.message);
+      }
+      return;
+    }
     fetchData();
   };
 

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabase';
 import { Subject } from '../../types';
-import { Trash2, Edit2, Save, X, Plus } from 'lucide-react';
+import { Trash2, Edit2, Save, X, Plus, AlertCircle } from 'lucide-react';
 
 export const SubjectsManager: React.FC = () => {
   const [subjects, setSubjects] = useState<Subject[]>([]);
@@ -10,6 +10,7 @@ export const SubjectsManager: React.FC = () => {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [editCode, setEditCode] = useState('');
+  const [error, setError] = useState('');
 
   useEffect(() => { fetchSubjects(); }, []);
 
@@ -25,7 +26,17 @@ export const SubjectsManager: React.FC = () => {
   };
 
   const handleDelete = async (id: string) => {
-    await supabase.from('subjects').delete().eq('id', id);
+    setError('');
+    const { error: deleteError } = await supabase.from('subjects').delete().eq('id', id);
+    if (deleteError) {
+      console.error('Subject delete error:', deleteError);
+      if (deleteError.code === '23503' || deleteError.message.toLowerCase().includes('foreign key')) {
+        setError('This subject is still in use (teacher assignments or timetable slots). Remove those first.');
+      } else {
+        setError('Failed to delete subject: ' + deleteError.message);
+      }
+      return;
+    }
     fetchSubjects();
   };
 
@@ -48,6 +59,7 @@ export const SubjectsManager: React.FC = () => {
         <input placeholder="Code" value={code} onChange={e => setCode(e.target.value)} className="border p-2 rounded-xl text-xs" />
         <button onClick={handleAdd} className="bg-emerald-600 text-white px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1"><Plus className="w-4 h-4"/>Add</button>
       </div>
+      {error && <p className="text-rose-600 text-xs flex items-center gap-1"><AlertCircle className="w-3 h-3"/>{error}</p>}
       <table className="w-full text-left border-collapse">
         <thead className="text-[11px] text-slate-500 uppercase">
           <tr><th className="p-3">Name</th><th className="p-3">Code</th><th className="p-3">Actions</th></tr>

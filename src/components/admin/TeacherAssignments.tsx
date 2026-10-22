@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabase';
-import { Trash2, Plus } from 'lucide-react';
+import { Trash2, Plus, AlertCircle } from 'lucide-react';
 
 export const TeacherAssignments: React.FC = () => {
   const [assignments, setAssignments] = useState<any[]>([]);
@@ -10,6 +10,7 @@ export const TeacherAssignments: React.FC = () => {
   const [classId, setClassId] = useState('');
   const [subjectId, setSubjectId] = useState('');
   const [teacherId, setTeacherId] = useState('');
+  const [error, setError] = useState('');
 
   useEffect(() => { fetchData(); }, []);
 
@@ -30,7 +31,17 @@ export const TeacherAssignments: React.FC = () => {
   };
 
   const handleDelete = async (id: string) => {
-    await supabase.from('class_subject_teachers').delete().eq('id', id);
+    setError('');
+    const { error: deleteError } = await supabase.from('class_subject_teachers').delete().eq('id', id);
+    if (deleteError) {
+      console.error('Teacher assignment delete error:', deleteError);
+      if (deleteError.code === '23503' || deleteError.message.toLowerCase().includes('foreign key')) {
+        setError('This assignment is still in use. Remove related records first.');
+      } else {
+        setError('Failed to delete assignment: ' + deleteError.message);
+      }
+      return;
+    }
     fetchData();
   };
 
@@ -42,6 +53,7 @@ export const TeacherAssignments: React.FC = () => {
         <select value={teacherId} onChange={e => setTeacherId(e.target.value)} className="border p-2 rounded-xl text-xs"><option>Select Teacher</option>{teachers.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}</select>
         <button onClick={handleAdd} className="bg-emerald-600 text-white px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1"><Plus className="w-4 h-4"/>Assign</button>
       </div>
+      {error && <p className="text-rose-600 text-xs flex items-center gap-1"><AlertCircle className="w-3 h-3"/>{error}</p>}
       <table className="w-full text-left border-collapse">
         <thead className="text-[11px] text-slate-500 uppercase">
           <tr><th className="p-3">Class</th><th className="p-3">Subject</th><th className="p-3">Teacher</th><th className="p-3">Actions</th></tr>

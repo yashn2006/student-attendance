@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabase';
-import { Shield, ShieldAlert, Trash2, Plus } from 'lucide-react';
+import { Shield, ShieldAlert, Trash2, Plus, AlertCircle } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 
 export const TeachersManager: React.FC = () => {
@@ -8,6 +8,7 @@ export const TeachersManager: React.FC = () => {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
   const { user } = useAuth();
 
   useEffect(() => { fetchTeachers(); }, []);
@@ -38,8 +39,18 @@ export const TeachersManager: React.FC = () => {
   const handleDelete = async (id: string) => {
     // Basic safety: Don't delete self (though identifying self requires current user ID)
     if (confirm('Are you sure? This will delete the teacher row.')) {
-        await supabase.from('teachers').delete().eq('id', id);
-        fetchTeachers();
+      setError('');
+      const { error: deleteError } = await supabase.from('teachers').delete().eq('id', id);
+      if (deleteError) {
+        console.error('Teacher delete error:', deleteError);
+        if (deleteError.code === '23503' || deleteError.message.toLowerCase().includes('foreign key')) {
+          setError('This teacher is still in use (classes, assignments, sessions or timetable slots). Remove those first.');
+        } else {
+          setError('Failed to delete teacher: ' + deleteError.message);
+        }
+        return;
+      }
+      fetchTeachers();
     }
   };
 
@@ -51,6 +62,7 @@ export const TeachersManager: React.FC = () => {
         <input type="password" placeholder="Password" value={password} onChange={e => setPassword(e.target.value)} className="border p-2 rounded-xl text-xs" />
         <button onClick={handleAdd} className="bg-emerald-600 text-white px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1"><Plus className="w-4 h-4"/>Create Teacher</button>
       </div>
+      {error && <p className="text-rose-600 text-xs flex items-center gap-1"><AlertCircle className="w-3 h-3"/>{error}</p>}
       <table className="w-full text-left border-collapse">
         <thead className="text-[11px] text-slate-500 uppercase">
           <tr><th className="p-3">Name</th><th className="p-3">Email</th><th className="p-3">Admin</th><th className="p-3">Actions</th></tr>

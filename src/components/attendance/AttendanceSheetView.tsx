@@ -1,1565 +1,1212 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   FileSpreadsheet,
   Download,
-  Search,
-  ShieldAlert,
   Calendar,
-  Award,
   Check,
   AlertTriangle,
-  SlidersHorizontal,
-  Printer,
-  Copy,
-  Share2,
-  ChevronDown,
+  ShieldAlert,
+  Flag,
+  RefreshCw,
   Users,
-  Grab
+  BookOpen,
+  Clock,
+  UserX,
+  Loader2,
+  AlertCircle,
+  Inbox,
 } from 'lucide-react';
-import { initial150StudentsList } from '../../data/mock150Students';
-import { Student } from '../../types';
-import { SkeletonTable, SkeletonStatCard } from '../common/Skeleton';
+import { supabase } from '../../lib/supabase';
+import { useAuth } from '../../context/AuthContext';
+import { SkeletonTable } from '../common/Skeleton';
 
-type AttendanceStatusCell = 'P' | 'A' | 'L' | 'EX' | '-';
+const PRESENT_THRESHOLD = 75;
 
-interface DateColumn {
-  dayNum: number;
-  dayName: string;
-  dateStr: string;
-  isToday?: boolean;
-  month: string;
+type TabKey = 'sheet' | 'rejected' | 'flags';
+
+interface TeacherPair {
+  classId: string;
+  className: string;
+  classSection: string | null;
+  subjectId: string;
+  subjectName: string;
+  subjectCode: string | null;
 }
 
-const ALL_MONTHS = [
-  'June 2026',
-  'July 2026',
-  'August 2026',
-  'September 2026',
-  'October 2026'
-];
+interface SessionRow {
+  id: string;
+  class_id: string;
+  subject_id: string | null;
+  window_start: string;
+  window_end: string;
+  status: string | null;
+}
 
-// Master list of all subjects taught across SYBSc IT
-const ALL_REAL_SUBJECTS = [
-  { id: 'subj_ds', code: 'IT401', name: 'Data Structures & Algorithms', type: 'Core Theory', division: 'SYBSc IT - Div A', count: 64, color: '#12A176' },
-  { id: 'subj_os', code: 'IT402', name: 'Operating Systems Architecture', type: 'Core Theory', division: 'SYBSc IT - Div A', count: 64, color: '#4E7FD6' },
-  { id: 'subj_dbms', code: 'IT403', name: 'Advanced Database Systems', type: 'Core Theory', division: 'SYBSc IT - Div B', count: 58, color: '#12A176' },
-  { id: 'subj_cn', code: 'IT404', name: 'Computer Networks & Security', type: 'Core Theory', division: 'SYBSc IT - Div B', count: 60, color: '#4E7FD6' },
-  { id: 'subj_web', code: 'IT405', name: 'Modern Web Engineering', type: 'Core Lab', division: 'SYBSc IT - Div A', count: 55, color: '#E0A23B' },
-  { id: 'subj_fl', code: 'OE101', name: 'Financial Literacy (OE)', type: 'Open Elective', division: 'SYBSc IT - Div C', count: 50, color: '#4E7FD6' },
-  { id: 'subj_abm', code: 'OE102', name: 'Advertising & Brand Management (OE)', type: 'Open Elective', division: 'SYBSc IT - Div C', count: 100, color: '#12A176' }
-];
+interface StudentRow {
+  id: string;
+  name: string | null;
+  email: string | null;
+  enrollment_no: string | null;
+}
 
-// Convert raw 150 student roster items into standard Student models
-const initialStudentsList: Student[] = initial150StudentsList.map((st) => ({
-  id: st.id,
-  rollNo: st.rollNo,
-  name: st.name,
-  className: `SYBSc IT - ${st.division || 'Div A'}`,
-  avatar: `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"><rect width="100%" height="100%" fill="%23E5F5EE" rx="20"/><text x="50%" y="55%" dominant-baseline="middle" text-anchor="middle" fill="%2312A176" font-family="sans-serif" font-weight="900" font-size="28">${st.name.slice(0, 2).toUpperCase()}</text></svg>`,
-  overallAttendance: st.overallAttendance,
-  subjectAttendance: {
-    subj_ds: st.overallAttendance,
-    subj_os: st.overallAttendance - 2,
-    subj_dbms: st.overallAttendance + 1,
-    subj_cn: st.overallAttendance
-  },
-  isDefaulter: st.isDefaulter,
-  statusTag: st.statusTag === 'Top Ranker' ? 'Excellent' : st.statusTag === 'Critical Defaulter' || st.statusTag === 'At Risk' ? 'Critical Defaulter' : 'Regular',
-  contactEmail: st.contactEmail,
-  parentPhone: st.parentPhone
-}));
+interface AttendanceRecordRow {
+  id: string;
+  session_id: string;
+  student_id: string | null;
+  code_entered: string | null;
+  status: string | null;
+  reject_reason: string | null;
+  webauthn_verified: boolean | null;
+  device_fingerprint: string | null;
+  created_at: string | null;
+}
+
+interface AttendanceOverrideRow {
+  id: string;
+  session_id: string;
+  student_id: string;
+  teacher_id: string | null;
+  reason: string | null;
+  reason_note: string | null;
+  created_at: string | null;
+}
+
+interface AttendanceFlagRow {
+  id: string;
+  attendance_id: string | null;
+  session_id: string;
+  reason: string | null;
+  resolution: string | null;
+  resolved_by: string | null;
+  resolved_at: string | null;
+  device_fingerprint: string | null;
+  flagged_student_id: string | null;
+  conflicting_student_id: string | null;
+}
+
+interface SheetData {
+  sessions: SessionRow[];
+  enrolledStudentIds: string[];
+  students: StudentRow[];
+  records: AttendanceRecordRow[];
+  overrides: AttendanceOverrideRow[];
+  flags: AttendanceFlagRow[];
+}
+
+const EMPTY_DATA: SheetData = {
+  sessions: [],
+  enrolledStudentIds: [],
+  students: [],
+  records: [],
+  overrides: [],
+  flags: [],
+};
+
+function toInputDate(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function formatDate(iso: string | null): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' });
+}
+
+function formatTime(iso: string | null): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+}
+
+function formatDateTime(iso: string | null): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  return `${formatDate(iso)} · ${formatTime(iso)}`;
+}
+
+function sessionLabel(iso: string): string {
+  return `${formatDate(iso)} ${formatTime(iso)}`;
+}
+
+function csvCell(value: unknown): string {
+  const s = value === null || value === undefined ? '' : String(value);
+  if (/[",\r\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
+function downloadCsv(filename: string, rows: unknown[][]): void {
+  const csv = rows.map((row) => row.map(csvCell).join(',')).join('\r\n');
+  const blob = new Blob([`\ufeff${csv}`], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+function safeFilenamePart(value: string): string {
+  return value.replace(/[^a-z0-9_-]+/gi, '_').replace(/^_+|_+$/g, '') || 'attendance';
+}
+
+async function fetchAllRows<T>(
+  factory: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: unknown }>
+): Promise<T[]> {
+  const pageSize = 1000;
+  const rows: T[] = [];
+  let from = 0;
+
+  for (;;) {
+    const { data, error } = await factory(from, from + pageSize - 1);
+    if (error) throw error;
+    const page = (data ?? []) as T[];
+    rows.push(...page);
+    if (page.length < pageSize) break;
+    from += pageSize;
+  }
+
+  return rows;
+}
+
+function isPermissionError(value: unknown): boolean {
+  const err = value as { code?: string; status?: number; message?: string } | null;
+  const message = String(err?.message ?? '').toLowerCase();
+  return (
+    err?.code === '42501' ||
+    err?.code === 'PGRST301' ||
+    err?.status === 403 ||
+    message.includes('permission denied') ||
+    message.includes('row-level security')
+  );
+}
+
+function errorMessage(value: unknown): string {
+  const err = value as { message?: string; details?: string; hint?: string } | null;
+  return err?.message || err?.details || err?.hint || 'Unknown error';
+}
+
+function isFlagResolved(flag: AttendanceFlagRow): boolean {
+  return (
+    Boolean(flag.resolved_at) ||
+    Boolean(flag.resolved_by) ||
+    Boolean(flag.resolution && flag.resolution.trim())
+  );
+}
 
 export const AttendanceSheetView: React.FC = () => {
-  const [isLoading, setIsLoading] = useState(true);
+  const { user, loading: authLoading } = useAuth();
+  const teacherId = user?.id ?? '';
+
+  const today = useMemo(() => new Date(), []);
+  const [dateFrom, setDateFrom] = useState(() =>
+    toInputDate(new Date(today.getFullYear(), today.getMonth(), 1))
+  );
+  const [dateTo, setDateTo] = useState(() => toInputDate(today));
+
+  const [pairs, setPairs] = useState<TeacherPair[]>([]);
+  const [pairsLoading, setPairsLoading] = useState(true);
+  const [pairsError, setPairsError] = useState<unknown>(null);
+  const [pairsRetry, setPairsRetry] = useState(0);
+
+  const [selectedClassId, setSelectedClassId] = useState('');
+  const [selectedSubjectId, setSelectedSubjectId] = useState('');
+
+  const [data, setData] = useState<SheetData>(EMPTY_DATA);
+  const [dataLoading, setDataLoading] = useState(false);
+  const [dataError, setDataError] = useState<unknown>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [activeTab, setActiveTab] = useState<TabKey>('sheet');
 
   useEffect(() => {
-    const timer = setTimeout(() => setIsLoading(false), 450);
-    return () => clearTimeout(timer);
-  }, []);
+    if (!teacherId) {
+      setPairs([]);
+      setPairsLoading(false);
+      return;
+    }
 
-  // Filters & State
-  const [selectedMonths, setSelectedMonths] = useState<string[]>(['August 2026']);
-  const [selectedSubjectObj, setSelectedSubjectObj] = useState(ALL_REAL_SUBJECTS[0]);
-  const [selectedClass, setSelectedClass] = useState('All SYBSc IT (150 Roster)');
-  const [searchQuery, setSearchQuery] = useState('');
-  const [filterDefaultersOnly, setFilterDefaultersOnly] = useState(false);
+    let cancelled = false;
+    setPairsLoading(true);
+    setPairsError(null);
 
-  // Subject Dropdown Open State
-  const [isSubjectDropdownOpen, setIsSubjectDropdownOpen] = useState(false);
-  const [subjectSearchFilter, setSubjectSearchFilter] = useState('');
+    (async () => {
+      const { data: rows, error } = await supabase
+        .from('class_subject_teachers')
+        .select('class_id, subject_id, classes(id, name, section), subjects(id, name, code)')
+        .eq('teacher_id', teacherId);
 
-  // Custom Defaulter Settings Engine
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [targetThreshold, setTargetThreshold] = useState<number>(75);
-  const [onePresentPctWeight, setOnePresentPctWeight] = useState<number>(1.25);
-  const [oneAbsentPctPenalty, setOneAbsentPctPenalty] = useState<number>(0.75);
-  const [graceAllowancePct, setGraceAllowancePct] = useState<number>(0);
-  const [customWeightMode, setCustomWeightMode] = useState<boolean>(false);
+      if (cancelled) return;
 
-  // Sharing & Export Modals
-  const [isShareModalOpen, setIsShareModalOpen] = useState(false);
-  const [isPrintNoticeOpen, setIsPrintNoticeOpen] = useState(false);
-  const [copiedNotice, setCopiedNotice] = useState(false);
-  const [exportedSuccess, setExportedSuccess] = useState(false);
-
-  // Waiver Modal
-  const [waiverStudent, setWaiverStudent] = useState<Student | null>(null);
-  const [waiverReason, setWaiverReason] = useState('Medical Certificate Submitted');
-
-  // Days in selected months for lecture columns
-  const [allDateColumns] = useState<DateColumn[]>([
-    { dayNum: 1, dayName: 'Sat', dateStr: 'Aug 01', month: 'August 2026' },
-    { dayNum: 3, dayName: 'Mon', dateStr: 'Aug 03', month: 'August 2026' },
-    { dayNum: 4, dayName: 'Tue', dateStr: 'Aug 04', month: 'August 2026', isToday: true },
-    { dayNum: 5, dayName: 'Wed', dateStr: 'Aug 05', month: 'August 2026' },
-    { dayNum: 6, dayName: 'Thu', dateStr: 'Aug 06', month: 'August 2026' },
-    { dayNum: 7, dayName: 'Fri', dateStr: 'Aug 07', month: 'August 2026' },
-    { dayNum: 10, dayName: 'Mon', dateStr: 'Aug 10', month: 'August 2026' },
-    { dayNum: 11, dayName: 'Tue', dateStr: 'Aug 11', month: 'August 2026' },
-    { dayNum: 12, dayName: 'Wed', dateStr: 'Aug 12', month: 'August 2026' },
-    { dayNum: 13, dayName: 'Thu', dateStr: 'Aug 13', month: 'August 2026' },
-    { dayNum: 14, dayName: 'Fri', dateStr: 'Aug 14', month: 'August 2026' },
-    { dayNum: 17, dayName: 'Mon', dateStr: 'Aug 17', month: 'August 2026' },
-    { dayNum: 18, dayName: 'Tue', dateStr: 'Aug 18', month: 'August 2026' },
-    { dayNum: 19, dayName: 'Wed', dateStr: 'Aug 19', month: 'August 2026' },
-    { dayNum: 20, dayName: 'Thu', dateStr: 'Aug 20', month: 'August 2026' },
-    { dayNum: 1, dayName: 'Wed', dateStr: 'Jul 01', month: 'July 2026' },
-    { dayNum: 6, dayName: 'Mon', dateStr: 'Jul 06', month: 'July 2026' },
-    { dayNum: 13, dayName: 'Mon', dateStr: 'Jul 13', month: 'July 2026' },
-    { dayNum: 20, dayName: 'Mon', dateStr: 'Jul 20', month: 'July 2026' },
-    { dayNum: 27, dayName: 'Mon', dateStr: 'Jul 27', month: 'July 2026' },
-    { dayNum: 8, dayName: 'Mon', dateStr: 'Jun 08', month: 'June 2026' },
-    { dayNum: 15, dayName: 'Mon', dateStr: 'Jun 15', month: 'June 2026' },
-    { dayNum: 22, dayName: 'Mon', dateStr: 'Jun 22', month: 'June 2026' },
-    { dayNum: 29, dayName: 'Mon', dateStr: 'Jun 29', month: 'June 2026' }
-  ]);
-
-  const activeColumns = allDateColumns.filter((col) => selectedMonths.includes(col.month));
-
-  const [gridMatrix, setGridMatrix] = useState<Record<string, Record<string, AttendanceStatusCell>>>(() => {
-    const initial: Record<string, Record<string, AttendanceStatusCell>> = {};
-    initialStudentsList.forEach((student, sIdx) => {
-      initial[student.id] = {};
-      allDateColumns.forEach((col, idx) => {
-        if (student.isDefaulter && (sIdx + idx) % 3 === 0) {
-          initial[student.id][col.dateStr] = 'A';
-        } else if ((sIdx + idx) % 7 === 2) {
-          initial[student.id][col.dateStr] = 'L';
-        } else {
-          initial[student.id][col.dateStr] = 'P';
-        }
-      });
-    });
-    return initial;
-  });
-
-  const [students, setStudents] = useState<Student[]>(initialStudentsList);
-
-  const handleCellClick = (studentId: string, dateStr: string) => {
-    setGridMatrix((prev) => {
-      const current = prev[studentId]?.[dateStr] || 'P';
-      let next: AttendanceStatusCell = 'P';
-      if (current === 'P') next = 'A';
-      else if (current === 'A') next = 'L';
-      else if (current === 'L') next = 'EX';
-      else next = 'P';
-
-      return {
-        ...prev,
-        [studentId]: {
-          ...prev[studentId],
-          [dateStr]: next
-        }
-      };
-    });
-  };
-
-  const handleMarkDateAllPresent = (dateStr: string) => {
-    setGridMatrix((prev) => {
-      const updated = { ...prev };
-      Object.keys(updated).forEach((studentId) => {
-        updated[studentId] = {
-          ...updated[studentId],
-          [dateStr]: 'P'
-        };
-      });
-      return updated;
-    });
-  };
-
-  const toggleMonth = (m: string) => {
-    if (selectedMonths.includes(m)) {
-      if (selectedMonths.length > 1) {
-        setSelectedMonths(selectedMonths.filter((item) => item !== m));
+      if (error) {
+        setPairsError(error);
+        setPairs([]);
+        setPairsLoading(false);
+        return;
       }
-    } else {
-      setSelectedMonths([...selectedMonths, m]);
-    }
-  };
 
-  const selectAllMonths = () => {
-    if (selectedMonths.length === ALL_MONTHS.length) {
-      setSelectedMonths(['August 2026']);
-    } else {
-      setSelectedMonths([...ALL_MONTHS]);
-    }
-  };
+      const result: TeacherPair[] = [];
+      const seen = new Set<string>();
 
-  const handleGrantWaiver = () => {
-    if (!waiverStudent) return;
-    setStudents((prev) =>
-      prev.map((s) => {
-        if (s.id === waiverStudent.id) {
-          return {
-            ...s,
-            isDefaulter: false,
-            overallAttendance: Math.max(s.overallAttendance, targetThreshold + 1),
-            statusTag: 'Regular'
-          };
+      for (const row of (rows ?? []) as any[]) {
+        const cls = Array.isArray(row.classes) ? row.classes[0] : row.classes;
+        const subj = Array.isArray(row.subjects) ? row.subjects[0] : row.subjects;
+        if (!row.class_id || !row.subject_id || !cls || !subj) continue;
+
+        const key = `${row.class_id}:${row.subject_id}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        result.push({
+          classId: row.class_id,
+          className: cls.name ?? 'Untitled class',
+          classSection: cls.section ?? null,
+          subjectId: row.subject_id,
+          subjectName: subj.name ?? 'Untitled subject',
+          subjectCode: subj.code ?? null,
+        });
+      }
+
+      result.sort(
+        (a, b) =>
+          a.className.localeCompare(b.className) ||
+          (a.classSection ?? '').localeCompare(b.classSection ?? '') ||
+          a.subjectName.localeCompare(b.subjectName)
+      );
+
+      setPairs(result);
+      setPairsLoading(false);
+
+      if (result.length > 0) {
+        setSelectedClassId((current) =>
+          result.some((p) => p.classId === current) ? current : result[0].classId
+        );
+        setSelectedSubjectId((current) =>
+          result.some((p) => p.subjectId === current) ? current : result[0].subjectId
+        );
+      } else {
+        setSelectedClassId('');
+        setSelectedSubjectId('');
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [teacherId, pairsRetry]);
+
+  const classOptions = useMemo(() => {
+    const map = new Map<string, { id: string; name: string; section: string | null }>();
+    for (const pair of pairs) {
+      if (!map.has(pair.classId)) {
+        map.set(pair.classId, {
+          id: pair.classId,
+          name: pair.className,
+          section: pair.classSection,
+        });
+      }
+    }
+    return Array.from(map.values());
+  }, [pairs]);
+
+  const subjectOptions = useMemo(
+    () => pairs.filter((pair) => pair.classId === selectedClassId),
+    [pairs, selectedClassId]
+  );
+
+  useEffect(() => {
+    if (subjectOptions.length === 0) {
+      setSelectedSubjectId('');
+      return;
+    }
+    if (!subjectOptions.some((pair) => pair.subjectId === selectedSubjectId)) {
+      setSelectedSubjectId(subjectOptions[0].subjectId);
+    }
+  }, [subjectOptions, selectedSubjectId]);
+
+  useEffect(() => {
+    if (!teacherId || !selectedClassId || !selectedSubjectId || !dateFrom || !dateTo) {
+      setData(EMPTY_DATA);
+      setDataLoading(false);
+      return;
+    }
+
+    if (dateFrom > dateTo) {
+      setData(EMPTY_DATA);
+      setDataError(new Error('Start date must be on or before the end date.'));
+      setDataLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setDataLoading(true);
+    setDataError(null);
+
+    (async () => {
+      try {
+        const rangeStart = new Date(`${dateFrom}T00:00:00`).toISOString();
+        const rangeEnd = new Date(`${dateTo}T23:59:59.999`).toISOString();
+
+        const [sessionResult, enrollmentResult] = await Promise.all([
+          supabase
+            .from('sessions')
+            .select('id, class_id, subject_id, window_start, window_end, status')
+            .eq('class_id', selectedClassId)
+            .eq('subject_id', selectedSubjectId)
+            .eq('teacher_id', teacherId)
+            .gte('window_start', rangeStart)
+            .lte('window_start', rangeEnd)
+            .order('window_start', { ascending: true }),
+          fetchAllRows<{ student_id: string }>((from, to) =>
+            supabase
+              .from('class_enrollments')
+              .select('student_id')
+              .eq('class_id', selectedClassId)
+              .order('student_id', { ascending: true })
+              .range(from, to)
+          ),
+        ]);
+
+        if (sessionResult.error) throw sessionResult.error;
+
+        const sessions = (sessionResult.data ?? []) as SessionRow[];
+        const sessionIds = sessions.map((session) => session.id);
+        const enrolledStudentIds = (enrollmentResult ?? [])
+          .map((row) => row.student_id)
+          .filter(Boolean);
+
+        let records: AttendanceRecordRow[] = [];
+        let overrides: AttendanceOverrideRow[] = [];
+        let flags: AttendanceFlagRow[] = [];
+
+        if (sessionIds.length > 0) {
+          [records, overrides, flags] = await Promise.all([
+            fetchAllRows<AttendanceRecordRow>((from, to) =>
+              supabase
+                .from('attendance_records')
+                .select(
+                  'id, session_id, student_id, code_entered, status, reject_reason, webauthn_verified, device_fingerprint, created_at'
+                )
+                .in('session_id', sessionIds)
+                .order('created_at', { ascending: true })
+                .range(from, to)
+            ),
+            fetchAllRows<AttendanceOverrideRow>((from, to) =>
+              supabase
+                .from('attendance_overrides')
+                .select('id, session_id, student_id, teacher_id, reason, reason_note, created_at')
+                .in('session_id', sessionIds)
+                .order('created_at', { ascending: true })
+                .range(from, to)
+            ),
+            fetchAllRows<AttendanceFlagRow>((from, to) =>
+              supabase
+                .from('attendance_flags')
+                .select(
+                  'id, attendance_id, session_id, reason, resolution, resolved_by, resolved_at, device_fingerprint, flagged_student_id, conflicting_student_id'
+                )
+                .in('session_id', sessionIds)
+                .order('created_at', { ascending: true })
+                .range(from, to)
+            ),
+          ]);
         }
-        return s;
-      })
+
+        const studentIds = new Set<string>(enrolledStudentIds);
+        records.forEach((row) => row.student_id && studentIds.add(row.student_id));
+        overrides.forEach((row) => row.student_id && studentIds.add(row.student_id));
+        flags.forEach((row) => {
+          if (row.flagged_student_id) studentIds.add(row.flagged_student_id);
+          if (row.conflicting_student_id) studentIds.add(row.conflicting_student_id);
+        });
+
+        let students: StudentRow[] = [];
+        if (studentIds.size > 0) {
+          students = await fetchAllRows<StudentRow>((from, to) =>
+            supabase
+              .from('students')
+              .select('id, name, email, enrollment_no')
+              .in('id', Array.from(studentIds))
+              .order('id', { ascending: true })
+              .range(from, to)
+          );
+        }
+
+        if (cancelled) return;
+
+        setData({
+          sessions,
+          enrolledStudentIds,
+          students,
+          records,
+          overrides,
+          flags,
+        });
+      } catch (err) {
+        if (!cancelled) {
+          setData(EMPTY_DATA);
+          setDataError(err);
+        }
+      } finally {
+        if (!cancelled) setDataLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [teacherId, selectedClassId, selectedSubjectId, dateFrom, dateTo, refreshKey]);
+
+  const selectedPair = useMemo(
+    () =>
+      pairs.find(
+        (pair) => pair.classId === selectedClassId && pair.subjectId === selectedSubjectId
+      ) ?? null,
+    [pairs, selectedClassId, selectedSubjectId]
+  );
+
+  const studentById = useMemo(() => {
+    const map = new Map<string, StudentRow>();
+    for (const student of data.students) map.set(student.id, student);
+    return map;
+  }, [data.students]);
+
+  const enrolledStudents = useMemo(() => {
+    const rows = data.enrolledStudentIds
+      .map((id) => studentById.get(id))
+      .filter((student): student is StudentRow => Boolean(student));
+    rows.sort(
+      (a, b) =>
+        (a.enrollment_no ?? '').localeCompare(b.enrollment_no ?? '', undefined, {
+          numeric: true,
+        }) || (a.name ?? '').localeCompare(b.name ?? '')
     );
-    setWaiverStudent(null);
-  };
+    return rows;
+  }, [data.enrolledStudentIds, studentById]);
 
-  const tableContainerRef = useRef<HTMLDivElement>(null);
-  const [isDragging, setIsDragging] = useState(false);
-  const [startX, setStartX] = useState(0);
-  const [startY, setStartY] = useState(0);
-  const [scrollLeft, setScrollLeft] = useState(0);
-  const [scrollTop, setScrollTop] = useState(0);
-
-  const handleMouseDown = (e: React.MouseEvent) => {
-    if (!tableContainerRef.current) return;
-    const target = e.target as HTMLElement;
-    if (target.closest('button') || target.closest('input') || target.closest('select')) return;
-
-    setIsDragging(true);
-    setStartX(e.pageX - tableContainerRef.current.offsetLeft);
-    setStartY(e.pageY - tableContainerRef.current.offsetTop);
-    setScrollLeft(tableContainerRef.current.scrollLeft);
-    setScrollTop(tableContainerRef.current.scrollTop);
-  };
-
-  const handleMouseLeaveOrUp = () => {
-    setIsDragging(false);
-  };
-
-  const handleMouseMove = (e: React.MouseEvent) => {
-    if (!isDragging || !tableContainerRef.current) return;
-    e.preventDefault();
-    const x = e.pageX - tableContainerRef.current.offsetLeft;
-    const y = e.pageY - tableContainerRef.current.offsetTop;
-    const walkX = (x - startX) * 1.5;
-    const walkY = (y - startY) * 1.5;
-    tableContainerRef.current.scrollLeft = scrollLeft - walkX;
-    tableContainerRef.current.scrollTop = scrollTop - walkY;
-  };
-
-  const handleTouchStart = (e: React.TouchEvent) => {
-    if (!tableContainerRef.current || e.touches.length !== 1) return;
-    const touch = e.touches[0];
-    setStartX(touch.pageX - tableContainerRef.current.offsetLeft);
-    setStartY(touch.pageY - tableContainerRef.current.offsetTop);
-    setScrollLeft(tableContainerRef.current.scrollLeft);
-    setScrollTop(tableContainerRef.current.scrollTop);
-  };
-
-  const handleTouchMove = (e: React.TouchEvent) => {
-    if (!tableContainerRef.current || e.touches.length !== 1) return;
-    const touch = e.touches[0];
-    const x = touch.pageX - tableContainerRef.current.offsetLeft;
-    const y = touch.pageY - tableContainerRef.current.offsetTop;
-    const walkX = (x - startX) * 1.2;
-    const walkY = (y - startY) * 1.2;
-    tableContainerRef.current.scrollLeft = scrollLeft - walkX;
-    tableContainerRef.current.scrollTop = scrollTop - walkY;
-  };
-
-  const calculateStudentStats = (student: Student) => {
-    const studentCells = gridMatrix[student.id] || {};
-    const cols = activeColumns.length > 0 ? activeColumns : allDateColumns;
-    const totalConducted = cols.length;
-
-    let presentCount = 0;
-    let absentCount = 0;
-    let lateCount = 0;
-
-    cols.forEach((col) => {
-      const status = studentCells[col.dateStr] || 'P';
-      if (status === 'P' || status === 'EX') {
-        presentCount += 1;
-      } else if (status === 'L') {
-        presentCount += 0.5;
-        lateCount += 1;
-      } else if (status === 'A') {
-        absentCount += 1;
+  const verifiedSet = useMemo(() => {
+    const set = new Set<string>();
+    for (const record of data.records) {
+      if (record.status === 'verified' && record.student_id) {
+        set.add(`${record.session_id}:${record.student_id}`);
       }
-    });
-
-    let calculatedPct = 0;
-    if (customWeightMode) {
-      const score = presentCount * onePresentPctWeight - absentCount * oneAbsentPctPenalty + graceAllowancePct;
-      calculatedPct = Math.max(0, Math.min(100, Math.round(score)));
-    } else {
-      calculatedPct = Math.min(100, Math.round(((presentCount) / (totalConducted || 1)) * 100 + graceAllowancePct));
     }
+    return set;
+  }, [data.records]);
 
-    const isDefaulter = calculatedPct < targetThreshold;
-
-    let deficitLectures = 0;
-    if (calculatedPct < targetThreshold && targetThreshold < 100) {
-      const numerator = (targetThreshold * totalConducted) - (100 * presentCount);
-      const denominator = 100 - targetThreshold;
-      deficitLectures = Math.max(0, Math.ceil(numerator / denominator));
+  const overrideSet = useMemo(() => {
+    const set = new Set<string>();
+    for (const override of data.overrides) {
+      if (override.student_id) set.add(`${override.session_id}:${override.student_id}`);
     }
+    return set;
+  }, [data.overrides]);
 
-    return {
-      totalConducted,
-      presentCount,
-      absentCount,
-      lateCount,
-      calculatedPct,
-      isDefaulter,
-      deficitLectures
-    };
+  const unresolvedFlagSet = useMemo(() => {
+    const set = new Set<string>();
+    for (const flag of data.flags) {
+      if (isFlagResolved(flag)) continue;
+      if (flag.flagged_student_id) {
+        set.add(`${flag.session_id}:${flag.flagged_student_id}`);
+      }
+      if (flag.conflicting_student_id) {
+        set.add(`${flag.session_id}:${flag.conflicting_student_id}`);
+      }
+    }
+    return set;
+  }, [data.flags]);
+
+  const rejectedRecords = useMemo(
+    () =>
+      data.records
+        .filter((record) => record.status !== 'verified')
+        .sort((a, b) => {
+          const aTime = a.created_at ? new Date(a.created_at).getTime() : 0;
+          const bTime = b.created_at ? new Date(b.created_at).getTime() : 0;
+          return bTime - aTime;
+        }),
+    [data.records]
+  );
+
+  const sortedFlags = useMemo(
+    () =>
+      [...data.flags].sort((a, b) => {
+        const aResolved = isFlagResolved(a);
+        const bResolved = isFlagResolved(b);
+        if (aResolved !== bResolved) return aResolved ? 1 : -1;
+        const aTime = a.resolved_at ? new Date(a.resolved_at).getTime() : 0;
+        const bTime = b.resolved_at ? new Date(b.resolved_at).getTime() : 0;
+        return bTime - aTime;
+      }),
+    [data.flags]
+  );
+
+  const sessionColumnLabels = useMemo(
+    () => data.sessions.map((session) => sessionLabel(session.window_start)),
+    [data.sessions]
+  );
+
+  const studentName = (id: string | null | undefined): string => {
+    if (!id) return '—';
+    return studentById.get(id)?.name?.trim() || 'Unknown student';
   };
 
-  const processedStudents = students.map((s) => {
-    const stats = calculateStudentStats(s);
-    return {
-      ...s,
-      dynamicStats: stats
-    };
-  });
-
-  const filteredStudents = processedStudents.filter((s) => {
-    const matchesSearch =
-      s.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      s.rollNo.toLowerCase().includes(searchQuery.toLowerCase());
-
-    const matchesClass =
-      selectedClass.includes('150 Roster') ||
-      (selectedClass.includes('Div A') && s.className.includes('Div A')) ||
-      (selectedClass.includes('Div B') && s.className.includes('Div B')) ||
-      (selectedClass.includes('Div C') && s.className.includes('Div C'));
-
-    if (filterDefaultersOnly) return matchesSearch && matchesClass && s.dynamicStats.isDefaulter;
-    return matchesSearch && matchesClass;
-  });
-
-  const defaultersList = processedStudents.filter((s) => s.dynamicStats.isDefaulter);
-
-  const getWhatsAppNoticeText = () => {
-    const subjectTitle = selectedSubjectObj.name;
-    const monthListStr = selectedMonths.join(', ');
-
-    let notice = `📢 *OFFICIAL DEFAULTER ATTENDANCE NOTICE*\n`;
-    notice += `🏫 *Class:* ${selectedClass}\n`;
-    notice += `📚 *Subject:* ${subjectTitle}\n`;
-    notice += `📅 *Period:* ${monthListStr}\n`;
-    notice += `🎯 *Minimum Required:* ${targetThreshold}%\n\n`;
-
-    if (defaultersList.length === 0) {
-      notice += `✅ *Great news! No defaulters flagged for this period.* All students have >= ${targetThreshold}% attendance.`;
-    } else {
-      notice += `🚨 *DEFAULTER STUDENTS (< ${targetThreshold}%):*\n`;
-      defaultersList.forEach((st, idx) => {
-        notice += `${idx + 1}. *Roll #${st.rollNo}* - ${st.name}: *${st.dynamicStats.calculatedPct}%* (Deficit: ${st.dynamicStats.deficitLectures} lectures needed)\n`;
-      });
-      notice += `\n⚠️ *Action Required:* Above students must report to the Class Coordinator immediately before term clearance.`;
-    }
-
-    return notice;
+  const studentEnrollment = (id: string | null | undefined): string => {
+    if (!id) return '—';
+    return studentById.get(id)?.enrollment_no?.trim() || '—';
   };
 
-  const handleCopyWhatsAppText = () => {
-    navigator.clipboard.writeText(getWhatsAppNoticeText());
-    setCopiedNotice(true);
-    setTimeout(() => setCopiedNotice(false), 3000);
-  };
+  const handleExport = () => {
+    const className = selectedPair
+      ? `${selectedPair.className}${selectedPair.classSection ? `_${selectedPair.classSection}` : ''}`
+      : 'class';
+    const subjectName = selectedPair?.subjectName ?? 'subject';
+    const base = safeFilenamePart(`${className}_${subjectName}_${dateFrom}_${dateTo}`);
 
-  const handleExportCSV = () => {
-    const headers = [
-      'Roll No',
-      'Student Name',
-      'Class',
-      'Attended Sessions',
-      'Total Conducted',
-      'Attendance %',
-      'Threshold %',
-      'Status',
-      'Deficit Lectures Needed',
-      ...activeColumns.map((c) => `${c.dateStr} (${c.month})`)
-    ];
-
-    const rows = filteredStudents.map((s) => {
-      const studentCells = gridMatrix[s.id] || {};
-      const rowData = [
-        s.rollNo,
-        `"${s.name}"`,
-        `"${s.className}"`,
-        s.dynamicStats.presentCount,
-        s.dynamicStats.totalConducted,
-        `${s.dynamicStats.calculatedPct}%`,
-        `${targetThreshold}%`,
-        s.dynamicStats.isDefaulter ? 'DEFAULTER' : 'REGULAR',
-        s.dynamicStats.deficitLectures,
-        ...activeColumns.map((c) => studentCells[c.dateStr] || 'P')
+    if (activeTab === 'sheet') {
+      const rows: unknown[][] = [
+        [
+          'Enrollment No',
+          'Student Name',
+          ...sessionColumnLabels,
+          'Attendance %',
+        ],
+        ...enrolledStudents.map((student) => {
+          let presentCount = 0;
+          const cells = data.sessions.map((session) => {
+            const key = `${session.id}:${student.id}`;
+            const isPresent = verifiedSet.has(key) || overrideSet.has(key);
+            if (isPresent) presentCount += 1;
+            const manual = overrideSet.has(key);
+            return isPresent ? (manual ? 'Present (manual)' : 'Present') : 'Absent';
+          });
+          const percentage =
+            data.sessions.length > 0
+              ? `${Math.round((presentCount / data.sessions.length) * 100)}%`
+              : '—';
+          return [
+            student.enrollment_no ?? '',
+            student.name ?? '',
+            ...cells,
+            percentage,
+          ];
+        }),
       ];
-      return rowData.join(',');
-    });
+      downloadCsv(`attendance_sheet_${base}.csv`, rows);
+      return;
+    }
 
-    const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows].join('\n');
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement('a');
-    link.setAttribute('href', encodedUri);
-    link.setAttribute('download', `Attendance_Report_${selectedClass.replace(/\s+/g, '_')}_${selectedMonths.join('_')}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    if (activeTab === 'rejected') {
+      const rows: unknown[][] = [
+        ['Enrollment No', 'Student Name', 'Session', 'Time', 'Reject Reason', 'WebAuthn Verified'],
+        ...rejectedRecords.map((record) => [
+          studentEnrollment(record.student_id),
+          studentName(record.student_id),
+          (() => {
+            const session = data.sessions.find((s) => s.id === record.session_id);
+            return session ? sessionLabel(session.window_start) : '—';
+          })(),
+          formatDateTime(record.created_at),
+          record.reject_reason ?? '',
+          record.webauthn_verified ? 'Yes' : 'No',
+        ]),
+      ];
+      downloadCsv(`rejected_attempts_${base}.csv`, rows);
+      return;
+    }
 
-    setExportedSuccess(true);
-    setTimeout(() => setExportedSuccess(false), 3000);
+    const rows: unknown[][] = [
+      [
+        'Flagged Student',
+        'Flagged Enrollment No',
+        'Conflicting Student',
+        'Conflicting Enrollment No',
+        'Session',
+        'Reason',
+        'Resolution Status',
+      ],
+      ...sortedFlags.map((flag) => {
+        const session = data.sessions.find((s) => s.id === flag.session_id);
+        return [
+          studentName(flag.flagged_student_id),
+          studentEnrollment(flag.flagged_student_id),
+          studentName(flag.conflicting_student_id),
+          studentEnrollment(flag.conflicting_student_id),
+          session ? sessionLabel(session.window_start) : '—',
+          flag.reason ?? '',
+          isFlagResolved(flag) ? flag.resolution || 'Resolved' : 'Unresolved',
+        ];
+      }),
+    ];
+    downloadCsv(`attendance_flags_${base}.csv`, rows);
   };
 
-  if (isLoading) {
+  const handleRefresh = () => setRefreshKey((key) => key + 1);
+
+  if (authLoading || pairsLoading) {
     return (
       <div className="space-y-6 max-w-7xl mx-auto font-sans text-[#14201B] pb-28">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <SkeletonStatCard />
-          <SkeletonStatCard />
-          <SkeletonStatCard />
-        </div>
-        <SkeletonTable rows={10} cols={8} />
+        <SkeletonTable rows={8} />
       </div>
     );
   }
 
+  const renderError = (error: unknown, onRetry?: () => void) => (
+    <div className="p-5 rounded-2xl bg-[#DB5B4E]/10 border border-[#DB5B4E]/30 space-y-3">
+      <div className="flex items-start gap-3">
+        <AlertCircle className="w-5 h-5 text-[#DB5B4E] shrink-0 mt-0.5" />
+        <div className="min-w-0">
+          <h3 className="text-sm font-bold text-[#DB5B4E]">
+            {isPermissionError(error)
+              ? 'Database permission denied'
+              : 'Could not load attendance data'}
+          </h3>
+          <p className="text-xs text-[#5C6B63] mt-1 break-words">{errorMessage(error)}</p>
+          {isPermissionError(error) && (
+            <p className="text-xs text-[#5C6B63] mt-2">
+              A SELECT grant or RLS policy is missing for your teacher account. No service-role
+              bypass is used. Ask an administrator to apply the attendance-sheet SQL grants and
+              policies for the authenticated role.
+            </p>
+          )}
+        </div>
+      </div>
+      {onRetry && (
+        <button
+          onClick={onRetry}
+          className="px-3.5 py-2 rounded-xl bg-white border border-[#DCEAE3] text-xs font-semibold text-[#14201B] hover:bg-[#F8FDFB] flex items-center gap-2 cursor-pointer"
+        >
+          <RefreshCw className="w-3.5 h-3.5" /> Retry
+        </button>
+      )}
+    </div>
+  );
+
+  const emptyState = (title: string, description: string) => (
+    <div className="py-16 px-6 text-center rounded-2xl bg-[#F8FDFB] border border-dashed border-[#DCEAE3] flex flex-col items-center justify-center">
+      <div className="w-12 h-12 rounded-xl bg-[#E5F5EE] flex items-center justify-center text-[#12A176] mb-3">
+        <Inbox className="w-6 h-6" />
+      </div>
+      <h3 className="text-sm font-bold text-[#14201B]">{title}</h3>
+      <p className="text-xs text-[#5C6B63] font-medium mt-1 max-w-md">{description}</p>
+    </div>
+  );
+
   return (
     <div className="space-y-6 max-w-7xl mx-auto font-sans text-[#14201B] pb-28">
-      {/* ================= HEADER CONTROL BAR ================= */}
-      <div className="p-6 rounded-2xl bg-white border border-[#DCEAE3] shadow-sm flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4">
+      <div className="p-6 rounded-2xl bg-white border border-[#DCEAE3] shadow-sm flex flex-col lg:flex-row lg:items-center justify-between gap-4">
         <div className="flex items-center gap-3.5">
           <div className="w-12 h-12 rounded-xl bg-[#E5F5EE] flex items-center justify-center text-[#12A176]">
             <FileSpreadsheet className="w-6 h-6" />
           </div>
           <div>
-            <div className="flex items-center gap-2">
-              <h2 className="text-xl font-bold text-[#14201B] tracking-tight">
-                Multi-Month Attendance & Defaulter Engine
-              </h2>
-              <span className="px-2.5 py-0.5 rounded-full bg-[#E5F5EE] text-[#12A176] text-[10px] font-bold uppercase">
-                Custom Criteria
-              </span>
-            </div>
+            <h2 className="text-xl font-bold text-[#14201B] tracking-tight">Attendance Sheet</h2>
             <p className="text-xs text-[#5C6B63] font-medium mt-0.5">
-              Multi-month aggregated matrix, custom defaulter thresholds ({targetThreshold}%), deficit lecture calculator, and group sharing tools.
+              Verified check-ins and manual overrides for your class and subject.
             </p>
           </div>
         </div>
 
-        {/* Action Controls & Export */}
         <div className="flex items-center gap-2 flex-wrap">
           <button
-            onClick={() => setIsSettingsOpen(true)}
-            className="px-3.5 py-2 rounded-xl bg-[#F8FDFB] text-[#14201B] border border-[#DCEAE3] hover:bg-[#E5F5EE] text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer"
+            onClick={handleRefresh}
+            disabled={!selectedPair || dataLoading}
+            className="px-3.5 py-2 rounded-xl bg-[#F8FDFB] text-[#14201B] border border-[#DCEAE3] hover:bg-[#E5F5EE] text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
           >
-            <SlidersHorizontal className="w-4 h-4 text-[#12A176]" />
-            <span>Criteria ({targetThreshold}%)</span>
+            <RefreshCw className={`w-4 h-4 text-[#12A176] ${dataLoading ? 'animate-spin' : ''}`} />
+            <span>Refresh</span>
           </button>
-
           <button
-            onClick={() => setIsShareModalOpen(true)}
-            className="px-3.5 py-2 rounded-xl bg-[#4E7FD6]/10 text-[#4E7FD6] border border-[#4E7FD6]/20 hover:bg-[#4E7FD6]/20 text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer"
-          >
-            <Share2 className="w-4 h-4" />
-            <span>Share Defaulter Notice</span>
-          </button>
-
-          <button
-            onClick={() => setFilterDefaultersOnly(!filterDefaultersOnly)}
-            className={`px-3.5 py-2 rounded-xl text-xs font-semibold border transition-all flex items-center gap-1.5 cursor-pointer ${
-              filterDefaultersOnly
-                ? 'bg-[#DB5B4E] text-white border-[#DB5B4E] shadow-sm'
-                : 'bg-[#F8FDFB] text-[#14201B] border-[#DCEAE3] hover:bg-[#E5F5EE]'
-            }`}
-          >
-            <ShieldAlert className="w-4 h-4" />
-            <span>{filterDefaultersOnly ? `Showing <${targetThreshold}%` : 'Filter Defaulters'}</span>
-          </button>
-
-          <button
-            onClick={handleExportCSV}
-            className="px-4 py-2 rounded-xl bg-[#12A176] hover:bg-[#0E8360] text-white text-xs font-semibold shadow-sm flex items-center gap-2 transition-all cursor-pointer"
+            onClick={handleExport}
+            disabled={dataLoading}
+            className="px-4 py-2 rounded-xl bg-[#12A176] hover:bg-[#0E8360] text-white text-xs font-semibold shadow-sm flex items-center gap-2 transition-all cursor-pointer disabled:opacity-50"
           >
             <Download className="w-4 h-4" />
-            <span>{exportedSuccess ? '✓ CSV Exported!' : 'Export CSV'}</span>
+            <span>Export CSV</span>
           </button>
         </div>
       </div>
 
-      {/* ================= MULTI-MONTH & SUBJECT SELECTOR PANEL ================= */}
-      <div className="p-5 rounded-2xl bg-white border border-[#DCEAE3] shadow-sm space-y-4">
-        {/* Row 1: Month Selection Chips */}
-        <div>
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-bold text-[#14201B] flex items-center gap-1.5">
-              <Calendar className="w-4 h-4 text-[#12A176]" /> Select Term Months to Include:
-            </span>
-            <button
-              onClick={selectAllMonths}
-              className="text-xs font-semibold text-[#12A176] hover:underline cursor-pointer"
-            >
-              {selectedMonths.length === ALL_MONTHS.length ? 'Reset to August' : '✓ Select All Semester Months'}
-            </button>
+      {pairsError ? (
+        renderError(pairsError, () => setPairsRetry((value) => value + 1))
+      ) : pairs.length === 0 ? (
+        emptyState(
+          'No class/subject assignments',
+          'You are not assigned to any class and subject yet. An administrator must add rows to class_subject_teachers for your teacher account.'
+        )
+      ) : (
+        <>
+          <div className="p-5 rounded-2xl bg-white border border-[#DCEAE3] shadow-sm space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+              <div>
+                <label className="block text-[10px] font-black uppercase text-[#5C6B63] mb-1.5 ml-1">
+                  Class
+                </label>
+                <div className="flex items-center gap-2 bg-[#F8FDFB] px-3 rounded-xl border border-[#DCEAE3] focus-within:border-[#12A176]">
+                  <Users className="w-4 h-4 text-[#12A176] shrink-0" />
+                  <select
+                    value={selectedClassId}
+                    onChange={(event) => {
+                      setSelectedClassId(event.target.value);
+                      setSelectedSubjectId('');
+                    }}
+                    className="w-full bg-transparent py-2.5 text-xs font-semibold text-[#14201B] focus:outline-none cursor-pointer"
+                  >
+                    {classOptions.map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {option.name}
+                        {option.section ? ` — ${option.section}` : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-black uppercase text-[#5C6B63] mb-1.5 ml-1">
+                  Subject
+                </label>
+                <div className="flex items-center gap-2 bg-[#F8FDFB] px-3 rounded-xl border border-[#DCEAE3] focus-within:border-[#12A176]">
+                  <BookOpen className="w-4 h-4 text-[#12A176] shrink-0" />
+                  <select
+                    value={selectedSubjectId}
+                    onChange={(event) => setSelectedSubjectId(event.target.value)}
+                    className="w-full bg-transparent py-2.5 text-xs font-semibold text-[#14201B] focus:outline-none cursor-pointer"
+                  >
+                    {subjectOptions.map((option) => (
+                      <option key={option.subjectId} value={option.subjectId}>
+                        {option.subjectName}
+                        {option.subjectCode ? ` (${option.subjectCode})` : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-black uppercase text-[#5C6B63] mb-1.5 ml-1">
+                  From
+                </label>
+                <div className="flex items-center gap-2 bg-[#F8FDFB] px-3 rounded-xl border border-[#DCEAE3] focus-within:border-[#12A176]">
+                  <Calendar className="w-4 h-4 text-[#12A176] shrink-0" />
+                  <input
+                    type="date"
+                    value={dateFrom}
+                    max={dateTo || undefined}
+                    onChange={(event) => setDateFrom(event.target.value)}
+                    className="w-full bg-transparent py-2.5 text-xs font-semibold text-[#14201B] focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-black uppercase text-[#5C6B63] mb-1.5 ml-1">
+                  To
+                </label>
+                <div className="flex items-center gap-2 bg-[#F8FDFB] px-3 rounded-xl border border-[#DCEAE3] focus-within:border-[#12A176]">
+                  <Calendar className="w-4 h-4 text-[#12A176] shrink-0" />
+                  <input
+                    type="date"
+                    value={dateTo}
+                    min={dateFrom || undefined}
+                    onChange={(event) => setDateTo(event.target.value)}
+                    className="w-full bg-transparent py-2.5 text-xs font-semibold text-[#14201B] focus:outline-none"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 pt-3 border-t border-[#DCEAE3] text-[11px]">
+              <span className="px-2.5 py-1 rounded-full bg-[#E5F5EE] text-[#12A176] font-bold">
+                {data.sessions.length} session{data.sessions.length === 1 ? '' : 's'} in range
+              </span>
+              <span className="px-2.5 py-1 rounded-full bg-[#F8FDFB] border border-[#DCEAE3] text-[#5C6B63] font-semibold">
+                {enrolledStudents.length} enrolled student{enrolledStudents.length === 1 ? '' : 's'}
+              </span>
+              <span className="px-2.5 py-1 rounded-full bg-[#DB5B4E]/10 border border-[#DB5B4E]/20 text-[#DB5B4E] font-bold">
+                {rejectedRecords.length} rejected attempt{rejectedRecords.length === 1 ? '' : 's'}
+              </span>
+              <span className="px-2.5 py-1 rounded-full bg-[#E0A23B]/10 border border-[#E0A23B]/25 text-[#B77A16] font-bold">
+                {sortedFlags.filter((flag) => !isFlagResolved(flag)).length} unresolved flag
+                {sortedFlags.filter((flag) => !isFlagResolved(flag)).length === 1 ? '' : 's'}
+              </span>
+            </div>
           </div>
 
-          <div className="flex items-center gap-2 flex-wrap">
-            {ALL_MONTHS.map((m) => {
-              const isSel = selectedMonths.includes(m);
-              return (
+          {dataError ? (
+            renderError(dataError, handleRefresh)
+          ) : dataLoading ? (
+            <SkeletonTable rows={8} />
+          ) : (
+            <div className="p-5 rounded-2xl bg-white border border-[#DCEAE3] shadow-sm">
+              <div className="flex items-center gap-1.5 p-1.5 bg-[#F8FDFB] rounded-xl border border-[#DCEAE3] w-fit mb-4 flex-wrap">
                 <button
-                  key={m}
-                  onClick={() => toggleMonth(m)}
-                  className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer flex items-center gap-1.5 ${
-                    isSel
-                      ? 'bg-[#12A176] text-white border-[#12A176] shadow-sm'
-                      : 'bg-[#F8FDFB] text-[#5C6B63] border-[#DCEAE3] hover:text-[#14201B]'
+                  onClick={() => setActiveTab('sheet')}
+                  className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                    activeTab === 'sheet'
+                      ? 'bg-[#14201B] text-white shadow-sm'
+                      : 'text-[#5C6B63] hover:text-[#14201B]'
                   }`}
                 >
-                  {isSel && <Check className="w-3.5 h-3.5 text-white" />}
-                  <span>{m}</span>
+                  <FileSpreadsheet className="w-3.5 h-3.5 inline mr-1.5" /> Attendance
                 </button>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Row 2: Clean Custom Subject & Class Selector */}
-        <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-3 pt-3 border-t border-[#DCEAE3]">
-          <div className="flex items-center gap-3 flex-wrap w-full lg:w-auto">
-            {/* Custom Subject Selector Popover */}
-            <div className="relative">
-              <button
-                type="button"
-                onClick={() => setIsSubjectDropdownOpen(!isSubjectDropdownOpen)}
-                className="bg-[#14201B] hover:bg-[#1f3029] text-white px-3.5 py-2 rounded-xl text-xs font-semibold transition-all flex items-center gap-2.5 shadow-sm cursor-pointer border border-[#DCEAE3]"
-              >
-                <span
-                  className="px-2 py-0.5 rounded-md font-mono text-[10px] font-bold text-white shrink-0"
-                  style={{ backgroundColor: selectedSubjectObj.color }}
+                <button
+                  onClick={() => setActiveTab('rejected')}
+                  className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                    activeTab === 'rejected'
+                      ? 'bg-[#14201B] text-white shadow-sm'
+                      : 'text-[#5C6B63] hover:text-[#14201B]'
+                  }`}
                 >
-                  {selectedSubjectObj.code}
-                </span>
-                <span className="truncate max-w-[200px]">{selectedSubjectObj.name}</span>
-                <ChevronDown className={`w-3.5 h-3.5 text-white/80 transition-transform duration-200 ${isSubjectDropdownOpen ? 'rotate-180' : ''}`} />
-              </button>
+                  <UserX className="w-3.5 h-3.5 inline mr-1.5" /> Rejected attempts ({rejectedRecords.length})
+                </button>
+                <button
+                  onClick={() => setActiveTab('flags')}
+                  className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                    activeTab === 'flags'
+                      ? 'bg-[#14201B] text-white shadow-sm'
+                      : 'text-[#5C6B63] hover:text-[#14201B]'
+                  }`}
+                >
+                  <Flag className="w-3.5 h-3.5 inline mr-1.5" /> Flags ({sortedFlags.length})
+                </button>
+              </div>
 
-              {isSubjectDropdownOpen && (
-                <div className="absolute top-full left-0 mt-2 z-50 w-80 bg-white border border-[#DCEAE3] rounded-2xl shadow-xl p-3 space-y-2 text-[#14201B]">
-                  <div className="relative mb-2">
-                    <Search className="w-3.5 h-3.5 text-[#5C6B63] absolute left-3 top-1/2 -translate-y-1/2" />
-                    <input
-                      type="text"
-                      placeholder="Search subject by code or name..."
-                      value={subjectSearchFilter}
-                      onChange={(e) => setSubjectSearchFilter(e.target.value)}
-                      className="w-full pl-9 pr-3 py-1.5 bg-[#F8FDFB] border border-[#DCEAE3] rounded-xl text-xs font-medium text-[#14201B] placeholder-[#5C6B63] focus:outline-none focus:border-[#12A176]"
-                    />
+              {activeTab === 'sheet' && (
+                <>
+                  <div className="flex items-center gap-3 flex-wrap pb-4 mb-3 border-b border-[#DCEAE3] text-[11px]">
+                    <span className="font-bold text-[#14201B]">Legend:</span>
+                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md bg-[#E5F5EE] text-[#12A176] font-bold border border-[#12A176]/30">
+                      <Check className="w-3 h-3" /> Present
+                    </span>
+                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md bg-[#DB5B4E]/10 text-[#DB5B4E] font-bold border border-[#DB5B4E]/20">
+                      Absent
+                    </span>
+                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md bg-[#4E7FD6]/10 text-[#4E7FD6] font-bold border border-[#4E7FD6]/20">
+                      M = manual override
+                    </span>
+                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md bg-[#E0A23B]/10 text-[#B77A16] font-bold border border-[#E0A23B]/25">
+                      <Flag className="w-3 h-3" /> Unresolved proxy flag
+                    </span>
                   </div>
 
-                  <div className="max-h-60 overflow-y-auto space-y-1 pr-1">
-                    {ALL_REAL_SUBJECTS.filter((s) =>
-                      s.name.toLowerCase().includes(subjectSearchFilter.toLowerCase()) ||
-                      s.code.toLowerCase().includes(subjectSearchFilter.toLowerCase())
-                    ).map((subj) => {
-                      const isSel = subj.id === selectedSubjectObj.id;
-                      return (
-                        <div
-                          key={subj.id}
-                          onClick={() => {
-                            setSelectedSubjectObj(subj);
-                            setIsSubjectDropdownOpen(false);
-                          }}
-                          className={`p-2 rounded-xl transition-all cursor-pointer flex items-center justify-between ${
-                            isSel
-                              ? 'bg-[#E5F5EE] border border-[#12A176] text-[#12A176] font-semibold'
-                              : 'hover:bg-[#F8FDFB] text-[#14201B]'
-                          }`}
-                        >
-                          <div className="flex items-center gap-2 truncate">
-                            <span
-                              className="px-2 py-0.5 rounded-md font-mono text-[10px] font-bold text-white shrink-0"
-                              style={{ backgroundColor: subj.color }}
-                            >
-                              {subj.code}
-                            </span>
-                            <div className="truncate">
-                              <span className="text-xs font-semibold block truncate">{subj.name}</span>
-                              <span className="text-[10px] text-[#5C6B63]">{subj.type} • {subj.count} Students</span>
-                            </div>
-                          </div>
-                          {isSel && <Check className="w-4 h-4 text-[#12A176] shrink-0" />}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
+                  {data.sessions.length === 0 ? (
+                    emptyState(
+                      'No sessions in this range',
+                      'No sessions match the selected class, subject and date range. Adjust the filters or start a session from Live Session.'
+                    )
+                  ) : enrolledStudents.length === 0 ? (
+                    emptyState(
+                      'No students enrolled',
+                      'This class has no class_enrollments rows yet.'
+                    )
+                  ) : (
+                    <div className="overflow-x-auto max-w-full rounded-xl border border-[#DCEAE3] max-h-[620px]">
+                      <table className="w-full text-left border-collapse font-sans min-w-[760px]">
+                        <thead>
+                          <tr className="bg-[#14201B] text-white text-[10px] font-semibold uppercase tracking-wider">
+                            <th className="p-3 sticky left-0 z-20 bg-[#14201B] min-w-[110px] border-r border-white/10">
+                              Enrollment
+                            </th>
+                            <th className="p-3 sticky left-[110px] z-20 bg-[#14201B] min-w-[180px] border-r border-white/10">
+                              Student
+                            </th>
+                            {data.sessions.map((session, index) => (
+                              <th
+                                key={session.id}
+                                className="p-2.5 min-w-[92px] text-center border-r border-white/10"
+                                title={`${sessionLabel(session.window_start)} — ${session.status ?? 'unknown'}`}
+                              >
+                                <div className="text-[9px] opacity-70 font-mono uppercase">
+                                  {new Date(session.window_start).toLocaleDateString(undefined, {
+                                    weekday: 'short',
+                                  })}
+                                </div>
+                                <div className="font-bold text-xs">
+                                  {formatDate(session.window_start)}
+                                </div>
+                                <div className="text-[9px] opacity-70 font-mono">
+                                  {formatTime(session.window_start)}
+                                </div>
+                                <div className="sr-only">Session {index + 1}</div>
+                              </th>
+                            ))}
+                            <th className="p-3 min-w-[110px] text-center border-l border-white/10">
+                              Attendance %
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-[#DCEAE3] text-xs">
+                          {enrolledStudents.map((student, index) => {
+                            let presentCount = 0;
+                            const cells = data.sessions.map((session) => {
+                              const key = `${session.id}:${student.id}`;
+                              const isPresent = verifiedSet.has(key) || overrideSet.has(key);
+                              if (isPresent) presentCount += 1;
+                              return {
+                                key,
+                                present: isPresent,
+                                manual: overrideSet.has(key),
+                                flagged: unresolvedFlagSet.has(key),
+                              };
+                            });
+                            const percentage =
+                              data.sessions.length > 0
+                                ? Math.round((presentCount / data.sessions.length) * 100)
+                                : null;
+
+                            return (
+                              <tr
+                                key={student.id}
+                                className={index % 2 === 0 ? 'bg-white' : 'bg-[#F8FDFB]'}
+                              >
+                                <td className="p-3 sticky left-0 z-10 bg-inherit font-mono font-semibold text-[#14201B] border-r border-[#DCEAE3] whitespace-nowrap">
+                                  {student.enrollment_no?.trim() || '—'}
+                                </td>
+                                <td className="p-3 sticky left-[110px] z-10 bg-inherit border-r border-[#DCEAE3]">
+                                  <span className="font-semibold text-[#14201B] block leading-tight">
+                                    {student.name?.trim() || 'Unknown student'}
+                                  </span>
+                                  {student.email && (
+                                    <span className="text-[10px] text-[#5C6B63] font-medium">
+                                      {student.email}
+                                    </span>
+                                  )}
+                                </td>
+                                {cells.map((cell) => (
+                                  <td
+                                    key={cell.key}
+                                    className="p-1.5 text-center border-r border-[#DCEAE3]"
+                                  >
+                                    {cell.present ? (
+                                      <span className="relative inline-flex flex-col items-center justify-center min-w-[58px] px-1.5 py-1 rounded-lg bg-[#E5F5EE] text-[#12A176] border border-[#12A176]/25 font-bold text-[10px]">
+                                        <span className="inline-flex items-center gap-1">
+                                          <Check className="w-3 h-3" /> Present
+                                        </span>
+                                        <span className="flex items-center gap-1 mt-0.5">
+                                          {cell.manual && (
+                                            <span
+                                              className="px-1 rounded bg-[#4E7FD6]/15 text-[#4E7FD6] text-[8px] font-black uppercase"
+                                              title="Present via teacher override"
+                                            >
+                                              Manual
+                                            </span>
+                                          )}
+                                          {cell.flagged && (
+                                            <Flag
+                                              className="w-3 h-3 text-[#B77A16]"
+                                              aria-label="Unresolved proxy attendance flag"
+                                            />
+                                          )}
+                                        </span>
+                                      </span>
+                                    ) : (
+                                      <span className="relative inline-flex flex-col items-center justify-center min-w-[58px] px-1.5 py-1 rounded-lg bg-[#DB5B4E]/10 text-[#DB5B4E] border border-[#DB5B4E]/20 font-bold text-[10px]">
+                                        Absent
+                                        {cell.flagged && (
+                                          <Flag
+                                            className="w-3 h-3 text-[#B77A16] mt-0.5"
+                                            aria-label="Unresolved proxy attendance flag"
+                                          />
+                                        )}
+                                      </span>
+                                    )}
+                                  </td>
+                                ))}
+                                <td className="p-3 text-center border-l border-[#DCEAE3]">
+                                  {percentage === null ? (
+                                    <span className="text-[#5C6B63] font-mono">—</span>
+                                  ) : (
+                                    <div className="flex flex-col items-center gap-1">
+                                      <span
+                                        className={`inline-block px-2.5 py-1 rounded-full font-mono font-bold text-xs ${
+                                          percentage < PRESENT_THRESHOLD
+                                            ? 'bg-[#DB5B4E] text-white'
+                                            : 'bg-[#E5F5EE] text-[#12A176] border border-[#12A176]/30'
+                                        }`}
+                                      >
+                                        {percentage}%
+                                      </span>
+                                      <span className="text-[9px] text-[#5C6B63] font-mono">
+                                        {presentCount} / {data.sessions.length}
+                                      </span>
+                                    </div>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </>
+              )}
+
+              {activeTab === 'rejected' && (
+                <>
+                  {rejectedRecords.length === 0 ? (
+                    emptyState(
+                      'No rejected attempts',
+                      'Every attendance attempt in this range has a verified status.'
+                    )
+                  ) : (
+                    <div className="overflow-x-auto max-w-full rounded-xl border border-[#DCEAE3]">
+                      <table className="w-full text-left border-collapse font-sans min-w-[860px]">
+                        <thead>
+                          <tr className="bg-[#14201B] text-white text-[10px] font-semibold uppercase tracking-wider">
+                            <th className="p-3 min-w-[110px] border-r border-white/10">Enrollment</th>
+                            <th className="p-3 min-w-[170px] border-r border-white/10">Student</th>
+                            <th className="p-3 min-w-[160px] border-r border-white/10">Session</th>
+                            <th className="p-3 min-w-[150px] border-r border-white/10">Time</th>
+                            <th className="p-3 min-w-[190px] border-r border-white/10">Reject Reason</th>
+                            <th className="p-3 min-w-[120px] text-center">WebAuthn</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-[#DCEAE3] text-xs">
+                          {rejectedRecords.map((record, index) => {
+                            const session = data.sessions.find(
+                              (item) => item.id === record.session_id
+                            );
+                            return (
+                              <tr
+                                key={record.id}
+                                className={index % 2 === 0 ? 'bg-white' : 'bg-[#F8FDFB]'}
+                              >
+                                <td className="p-3 font-mono font-semibold text-[#14201B] border-r border-[#DCEAE3] whitespace-nowrap">
+                                  {studentEnrollment(record.student_id)}
+                                </td>
+                                <td className="p-3 font-semibold text-[#14201B] border-r border-[#DCEAE3]">
+                                  {studentName(record.student_id)}
+                                </td>
+                                <td className="p-3 text-[#5C6B63] border-r border-[#DCEAE3]">
+                                  {session ? sessionLabel(session.window_start) : '—'}
+                                </td>
+                                <td className="p-3 text-[#5C6B63] font-mono border-r border-[#DCEAE3]">
+                                  {formatDateTime(record.created_at)}
+                                </td>
+                                <td className="p-3 border-r border-[#DCEAE3]">
+                                  <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg bg-[#DB5B4E]/10 text-[#DB5B4E] font-semibold text-[10px]">
+                                    <AlertTriangle className="w-3 h-3" />
+                                    {record.reject_reason || 'No reason recorded'}
+                                  </span>
+                                </td>
+                                <td className="p-3 text-center">
+                                  <span
+                                    className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg font-bold text-[10px] ${
+                                      record.webauthn_verified
+                                        ? 'bg-[#E5F5EE] text-[#12A176]'
+                                        : 'bg-[#E0A23B]/10 text-[#B77A16]'
+                                    }`}
+                                  >
+                                    {record.webauthn_verified ? (
+                                      <ShieldAlert className="w-3 h-3" />
+                                    ) : (
+                                      <Clock className="w-3 h-3" />
+                                    )}
+                                    {record.webauthn_verified ? 'Verified' : 'Not verified'}
+                                  </span>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </>
+              )}
+
+              {activeTab === 'flags' && (
+                <>
+                  {sortedFlags.length === 0 ? (
+                    emptyState(
+                      'No attendance flags',
+                      'No proxy or device-conflict flags were raised for this class, subject and date range.'
+                    )
+                  ) : (
+                    <div className="overflow-x-auto max-w-full rounded-xl border border-[#DCEAE3]">
+                      <table className="w-full text-left border-collapse font-sans min-w-[900px]">
+                        <thead>
+                          <tr className="bg-[#14201B] text-white text-[10px] font-semibold uppercase tracking-wider">
+                            <th className="p-3 min-w-[180px] border-r border-white/10">Flagged Student</th>
+                            <th className="p-3 min-w-[180px] border-r border-white/10">Conflicting Student</th>
+                            <th className="p-3 min-w-[160px] border-r border-white/10">Session</th>
+                            <th className="p-3 min-w-[220px] border-r border-white/10">Reason</th>
+                            <th className="p-3 min-w-[140px] text-center">Resolution</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-[#DCEAE3] text-xs">
+                          {sortedFlags.map((flag, index) => {
+                            const session = data.sessions.find(
+                              (item) => item.id === flag.session_id
+                            );
+                            const resolved = isFlagResolved(flag);
+                            return (
+                              <tr
+                                key={flag.id}
+                                className={index % 2 === 0 ? 'bg-white' : 'bg-[#F8FDFB]'}
+                              >
+                                <td className="p-3 border-r border-[#DCEAE3]">
+                                  <span className="font-semibold text-[#14201B] block">
+                                    {studentName(flag.flagged_student_id)}
+                                  </span>
+                                  <span className="text-[10px] text-[#5C6B63] font-mono">
+                                    {studentEnrollment(flag.flagged_student_id)}
+                                  </span>
+                                </td>
+                                <td className="p-3 border-r border-[#DCEAE3]">
+                                  <span className="font-semibold text-[#14201B] block">
+                                    {studentName(flag.conflicting_student_id)}
+                                  </span>
+                                  <span className="text-[10px] text-[#5C6B63] font-mono">
+                                    {studentEnrollment(flag.conflicting_student_id)}
+                                  </span>
+                                </td>
+                                <td className="p-3 text-[#5C6B63] border-r border-[#DCEAE3]">
+                                  {session ? sessionLabel(session.window_start) : '—'}
+                                </td>
+                                <td className="p-3 border-r border-[#DCEAE3]">
+                                  <span className="inline-flex items-center gap-1.5 text-[#B77A16] font-semibold">
+                                    <Flag className="w-3.5 h-3.5" />
+                                    {flag.reason || 'No reason recorded'}
+                                  </span>
+                                </td>
+                                <td className="p-3 text-center">
+                                  <span
+                                    className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full font-bold text-[10px] ${
+                                      resolved
+                                        ? 'bg-[#E5F5EE] text-[#12A176] border border-[#12A176]/25'
+                                        : 'bg-[#DB5B4E] text-white'
+                                    }`}
+                                  >
+                                    {resolved ? (
+                                      <Check className="w-3 h-3" />
+                                    ) : (
+                                      <AlertTriangle className="w-3 h-3" />
+                                    )}
+                                    {resolved ? flag.resolution || 'Resolved' : 'Unresolved'}
+                                  </span>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </>
               )}
             </div>
-
-            {/* Class Scope Selector */}
-            <div className="flex items-center gap-1.5 bg-[#F8FDFB] px-3 py-2 rounded-xl border border-[#DCEAE3]">
-              <Users className="w-3.5 h-3.5 text-[#12A176]" />
-              <select
-                value={selectedClass}
-                onChange={(e) => setSelectedClass(e.target.value)}
-                className="bg-transparent text-xs font-semibold text-[#14201B] focus:outline-none cursor-pointer"
-              >
-                <option value="All SYBSc IT (150 Roster)">All SYBSc IT (150 Roster)</option>
-                <option value="SYBSc IT - Div A">Div A (64 Students)</option>
-                <option value="SYBSc IT - Div B">Div B (58 Students)</option>
-                <option value="SYBSc IT - Div C">Div C (50 Students)</option>
-              </select>
-            </div>
-
-            {/* Active Defaulters Badge */}
-            <div className="px-3 py-1.5 rounded-xl bg-[#DB5B4E]/10 border border-[#DB5B4E]/20 text-[#DB5B4E] text-xs font-bold flex items-center gap-1.5">
-              <ShieldAlert className="w-3.5 h-3.5" />
-              <span>{defaultersList.length} Defaulters (&lt;{targetThreshold}%)</span>
-            </div>
-          </div>
-
-          {/* Search Input */}
-          <div className="relative w-full lg:w-64">
-            <Search className="w-3.5 h-3.5 text-[#5C6B63] absolute left-3 top-1/2 -translate-y-1/2" />
-            <input
-              type="text"
-              placeholder="Search student or roll no..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-8 pr-3 py-2 rounded-xl bg-[#F8FDFB] border border-[#DCEAE3] text-xs text-[#14201B] placeholder-[#5C6B63] focus:outline-none focus:ring-2 focus:ring-[#12A176] font-medium"
-            />
-          </div>
-        </div>
-      </div>
-
-      {/* ================= SPREADSHEET MATRIX TABLE WITH CLICK & DRAG/SWIPE ================= */}
-      <div className="p-5 rounded-2xl bg-white border border-[#DCEAE3] shadow-sm overflow-hidden">
-        {/* Cell Key Legend & Drag Hint */}
-        <div className="flex items-center justify-between gap-2 pb-4 mb-3 border-b border-[#DCEAE3] flex-wrap text-xs">
-          <div className="flex items-center gap-3 flex-wrap">
-            <span className="text-xs font-bold text-[#14201B]">Cell Key:</span>
-            <span className="px-2.5 py-0.5 rounded-md bg-[#E5F5EE] text-[#12A176] font-bold text-[11px] border border-[#12A176]/30">
-              P = Present
-            </span>
-            <span className="px-2.5 py-0.5 rounded-md bg-[#DB5B4E] text-white font-bold text-[11px]">
-              A = Absent
-            </span>
-            <span className="px-2.5 py-0.5 rounded-md bg-[#E0A23B]/15 text-[#E0A23B] border border-[#E0A23B]/30 font-bold text-[11px]">
-              L = Late (0.5)
-            </span>
-            <span className="px-2.5 py-0.5 rounded-md bg-[#4E7FD6]/15 text-[#4E7FD6] border border-[#4E7FD6]/30 font-bold text-[11px]">
-              EX = Excused
-            </span>
-          </div>
-
-          <div className="flex items-center gap-1.5 text-xs text-[#12A176] font-semibold bg-[#E5F5EE] px-3 py-1 rounded-full border border-[#DCEAE3]">
-            <Grab className="w-3.5 h-3.5" />
-            <span>Click & Left-Swipe or Drag sheet horizontally/vertically</span>
-          </div>
-        </div>
-
-        {/* Scrollable Spreadsheet Container */}
-        <div
-          ref={tableContainerRef}
-          onMouseDown={handleMouseDown}
-          onMouseLeave={handleMouseLeaveOrUp}
-          onMouseUp={handleMouseLeaveOrUp}
-          onMouseMove={handleMouseMove}
-          onTouchStart={handleTouchStart}
-          onTouchMove={handleTouchMove}
-          className={`overflow-x-auto max-w-full rounded-xl border border-[#DCEAE3] max-h-[600px] select-none ${
-            isDragging ? 'cursor-grabbing' : 'cursor-grab'
-          }`}
-        >
-          <table className="w-full text-left border-collapse font-sans min-w-[950px]">
-            <thead>
-              <tr className="bg-[#14201B] text-white text-[11px] font-semibold uppercase tracking-wider">
-                <th className="p-3 sticky left-0 z-20 bg-[#14201B] min-w-[80px] border-r border-white/10">
-                  Roll No
-                </th>
-                <th className="p-3 sticky left-[80px] z-20 bg-[#14201B] min-w-[180px] border-r border-white/10">
-                  Student Name
-                </th>
-                <th className="p-3 min-w-[100px] text-center border-r border-white/10">Attended / Total</th>
-                <th className="p-3 min-w-[90px] text-center border-r border-white/10">Attendance %</th>
-                <th className="p-3 min-w-[110px] text-center border-r border-white/10">Status</th>
-                <th className="p-3 min-w-[110px] text-center border-r border-white/10 text-[#E5F5EE]">Deficit Lectures</th>
-
-                {activeColumns.map((col) => (
-                  <th
-                    key={col.dateStr}
-                    className={`p-2.5 min-w-[60px] text-center border-r border-white/10 ${
-                      col.isToday ? 'bg-[#12A176] text-white' : ''
-                    }`}
-                  >
-                    <div className="text-[9px] opacity-70 font-mono uppercase">{col.dayName}</div>
-                    <div className="font-bold text-xs">{col.dayNum}</div>
-                    <button
-                      onClick={() => handleMarkDateAllPresent(col.dateStr)}
-                      title={`Mark all present for ${col.dateStr}`}
-                      className="mt-1 text-[9px] px-1 py-0.2 rounded bg-white/10 hover:bg-white/20 text-[#E5F5EE] block mx-auto cursor-pointer"
-                    >
-                      All P
-                    </button>
-                  </th>
-                ))}
-
-                <th className="p-3 min-w-[120px] text-center">Actions</th>
-              </tr>
-            </thead>
-
-            <tbody className="divide-y divide-[#DCEAE3] text-xs">
-              {filteredStudents.length === 0 ? (
-                <tr>
-                  <td colSpan={activeColumns.length + 7} className="p-8 text-center text-[#5C6B63]">
-                    No students match the selected search query or defaulter filter.
-                  </td>
-                </tr>
-              ) : (
-                filteredStudents.map((student, idx) => {
-                  const studentCells = gridMatrix[student.id] || {};
-                  const { presentCount, totalConducted, calculatedPct, isDefaulter, deficitLectures } =
-                    student.dynamicStats;
-
-                  return (
-                    <tr
-                      key={student.id}
-                      className={`hover:bg-[#E5F5EE]/40 transition-colors ${
-                        idx % 2 === 0 ? 'bg-white' : 'bg-[#F8FDFB]'
-                      }`}
-                    >
-                      <td className="p-3 sticky left-0 z-10 bg-inherit font-mono font-semibold text-[#14201B] border-r border-[#DCEAE3]">
-                        {student.rollNo}
-                      </td>
-
-                      <td className="p-3 sticky left-[80px] z-10 bg-inherit border-r border-[#DCEAE3]">
-                        <div className="flex items-center gap-2.5">
-                          <img
-                            src={student.avatar}
-                            alt={student.name}
-                            className="w-7 h-7 rounded-lg object-cover border border-[#DCEAE3]"
-                          />
-                          <div>
-                            <span className="font-semibold text-[#14201B] block leading-tight">{student.name}</span>
-                            <span className="text-[10px] text-[#5C6B63] font-medium">{student.className}</span>
-                          </div>
-                        </div>
-                      </td>
-
-                      <td className="p-3 text-center font-mono font-medium text-[#5C6B63] border-r border-[#DCEAE3]">
-                        {presentCount} / {totalConducted}
-                      </td>
-
-                      <td className="p-3 text-center border-r border-[#DCEAE3]">
-                        <span
-                          className={`inline-block px-2.5 py-1 rounded-full font-mono font-bold text-xs ${
-                            calculatedPct >= targetThreshold
-                              ? 'bg-[#E5F5EE] text-[#12A176] border border-[#12A176]/30'
-                              : 'bg-[#DB5B4E] text-white'
-                          }`}
-                        >
-                          {calculatedPct}%
-                        </span>
-                      </td>
-
-                      <td className="p-3 text-center border-r border-[#DCEAE3]">
-                        {isDefaulter ? (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-[#DB5B4E] text-white text-[10px] font-bold uppercase shadow-sm">
-                            <AlertTriangle className="w-3 h-3" /> Defaulter
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-[#E5F5EE] text-[#12A176] text-[10px] font-bold border border-[#12A176]/20">
-                            <Check className="w-3 h-3 text-[#12A176]" /> Regular
-                          </span>
-                        )}
-                      </td>
-
-                      <td className="p-3 text-center border-r border-[#DCEAE3]">
-                        {isDefaulter ? (
-                          <span className="font-mono font-bold text-xs text-[#DB5B4E]">
-                            +{deficitLectures} needed
-                          </span>
-                        ) : (
-                          <span className="text-[10px] text-[#12A176] font-semibold">✓ Safe</span>
-                        )}
-                      </td>
-
-                      {activeColumns.map((col) => {
-                        const cellVal = studentCells[col.dateStr] || 'P';
-                        let badgeBg = 'bg-[#E5F5EE] text-[#12A176] font-bold border border-[#12A176]/20';
-                        if (cellVal === 'A') badgeBg = 'bg-[#DB5B4E] text-white font-bold shadow-sm';
-                        else if (cellVal === 'L') badgeBg = 'bg-[#E0A23B] text-white font-bold';
-                        else if (cellVal === 'EX') badgeBg = 'bg-[#4E7FD6] text-white font-bold';
-
-                        return (
-                          <td
-                            key={col.dateStr}
-                            onClick={() => handleCellClick(student.id, col.dateStr)}
-                            className="p-1.5 text-center border-r border-[#DCEAE3] cursor-pointer hover:bg-[#E5F5EE] select-none transition-all"
-                          >
-                            <span
-                              className={`inline-flex items-center justify-center w-7 h-7 rounded-lg text-xs transition-transform active:scale-90 ${badgeBg}`}
-                            >
-                              {cellVal}
-                            </span>
-                          </td>
-                        );
-                      })}
-
-                      <td className="p-3 text-center">
-                        {isDefaulter ? (
-                          <button
-                            onClick={() => setWaiverStudent(student)}
-                            className="px-2.5 py-1 rounded-lg bg-[#12A176]/10 hover:bg-[#12A176]/20 text-[#12A176] text-[10px] font-bold border border-[#12A176]/20 transition-colors cursor-pointer"
-                          >
-                            Exempt / Waiver
-                          </button>
-                        ) : (
-                          <span className="text-[10px] text-[#5C6B63] font-mono">—</span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* ================= MODAL 1: CUSTOM DEFAULTER SETTINGS DRAWER ================= */}
-      <AnimatePresence>
-        {isSettingsOpen && (
-          <div className="fixed inset-0 z-50 bg-[#14201B]/50 backdrop-blur-sm flex items-center justify-center p-4">
-            <motion.div
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white rounded-2xl border border-[#DCEAE3] p-6 w-full max-w-lg shadow-xl space-y-5"
-            >
-              <div className="flex items-center justify-between pb-3 border-b border-[#DCEAE3]">
-                <div className="flex items-center gap-2 text-[#14201B]">
-                  <SlidersHorizontal className="w-5 h-5 text-[#12A176]" />
-                  <h3 className="font-bold text-base">
-                    Custom Defaulter Calculation Rules
-                  </h3>
-                </div>
-                <button
-                  onClick={() => setIsSettingsOpen(false)}
-                  className="text-[#5C6B63] hover:text-[#14201B] font-bold"
-                >
-                  ✕
-                </button>
-              </div>
-
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <label className="text-xs font-semibold text-[#14201B]">
-                    Defaulter Threshold Target (%):
-                  </label>
-                  <span className="px-3 py-1 rounded-full bg-[#12A176] text-white font-mono font-bold text-xs">
-                    {targetThreshold}%
-                  </span>
-                </div>
-                <input
-                  type="range"
-                  min={50}
-                  max={90}
-                  step={1}
-                  value={targetThreshold}
-                  onChange={(e) => setTargetThreshold(Number(e.target.value))}
-                  className="w-full accent-[#12A176] cursor-pointer"
-                />
-                <div className="flex justify-between text-[10px] text-[#5C6B63] font-mono">
-                  <span>50% (Lenient)</span>
-                  <span>75% (Standard)</span>
-                  <span>85% (Strict)</span>
-                </div>
-              </div>
-
-              <div className="p-4 rounded-xl bg-[#F8FDFB] border border-[#DCEAE3] space-y-3">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h4 className="text-xs font-bold text-[#14201B]">Custom Session Weightage</h4>
-                    <p className="text-[11px] text-[#5C6B63]">
-                      e.g., 1 Present session = X% direct credit toward final grade.
-                    </p>
-                  </div>
-                  <input
-                    type="checkbox"
-                    checked={customWeightMode}
-                    onChange={(e) => setCustomWeightMode(e.target.checked)}
-                    className="w-4 h-4 accent-[#12A176] cursor-pointer"
-                  />
-                </div>
-
-                {customWeightMode && (
-                  <div className="pt-2 space-y-3 border-t border-[#DCEAE3]">
-                    <div className="flex items-center justify-between">
-                      <label className="text-xs font-semibold text-[#14201B]">
-                        1 Present Session Credit (+%):
-                      </label>
-                      <input
-                        type="number"
-                        step="0.25"
-                        min="0.5"
-                        max="5"
-                        value={onePresentPctWeight}
-                        onChange={(e) => setOnePresentPctWeight(Number(e.target.value))}
-                        className="w-20 px-2 py-1 bg-white border border-[#DCEAE3] rounded-lg text-xs font-bold font-mono text-center text-[#12A176]"
-                      />
-                    </div>
-
-                    <div className="flex items-center justify-between">
-                      <label className="text-xs font-semibold text-[#14201B]">
-                        1 Absent Session Penalty (-%):
-                      </label>
-                      <input
-                        type="number"
-                        step="0.25"
-                        min="0"
-                        max="5"
-                        value={oneAbsentPctPenalty}
-                        onChange={(e) => setOneAbsentPctPenalty(Number(e.target.value))}
-                        className="w-20 px-2 py-1 bg-white border border-[#DCEAE3] rounded-lg text-xs font-bold font-mono text-center text-[#DB5B4E]"
-                      />
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-xs font-bold text-[#14201B] block">
-                  College Grace Allowance (Sports / NSS % Add-on):
-                </label>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="number"
-                    min="0"
-                    max="10"
-                    value={graceAllowancePct}
-                    onChange={(e) => setGraceAllowancePct(Number(e.target.value))}
-                    className="w-24 p-2 bg-[#F8FDFB] border border-[#DCEAE3] rounded-xl text-xs font-bold font-mono text-center text-[#14201B]"
-                  />
-                  <span className="text-xs text-[#5C6B63] font-medium">% added to overall score</span>
-                </div>
-              </div>
-
-              <div className="pt-2">
-                <button
-                  onClick={() => setIsSettingsOpen(false)}
-                  className="w-full py-3 rounded-xl bg-[#12A176] hover:bg-[#0E8360] text-white text-xs font-bold shadow-sm cursor-pointer"
-                >
-                  Save Criteria & Recalculate Matrix
-                </button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-
-      {/* ================= MODAL 2: WHATSAPP & GROUP NOTICE SHARE MODAL ================= */}
-      <AnimatePresence>
-        {isShareModalOpen && (
-          <div className="fixed inset-0 z-50 bg-[#14201B]/50 backdrop-blur-sm flex items-center justify-center p-4">
-            <motion.div
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white rounded-2xl border border-[#DCEAE3] p-6 w-full max-w-lg shadow-xl space-y-4"
-            >
-              <div className="flex items-center justify-between pb-3 border-b border-[#DCEAE3]">
-                <div className="flex items-center gap-2 text-[#14201B]">
-                  <Share2 className="w-5 h-5 text-[#12A176]" />
-                  <h3 className="font-bold text-base">
-                    Share Defaulter Notice to Class Group
-                  </h3>
-                </div>
-                <button
-                  onClick={() => setIsShareModalOpen(false)}
-                  className="text-[#5C6B63] hover:text-[#14201B] font-bold"
-                >
-                  ✕
-                </button>
-              </div>
-
-              <p className="text-xs text-[#5C6B63] font-medium">
-                Copy formatted WhatsApp/Telegram notice or print an official departmental memo with 1-click.
-              </p>
-
-              <div className="p-3.5 rounded-xl bg-[#14201B] text-[#E5F5EE] font-mono text-xs leading-relaxed max-h-56 overflow-y-auto whitespace-pre-wrap border border-[#DCEAE3] select-all">
-                {getWhatsAppNoticeText()}
-              </div>
-
-              <div className="pt-2 flex flex-col sm:flex-row items-center gap-2">
-                <button
-                  onClick={handleCopyWhatsAppText}
-                  className="w-full sm:flex-1 py-3 rounded-xl bg-[#12A176] hover:bg-[#0E8360] text-white text-xs font-bold flex items-center justify-center gap-2 shadow-sm cursor-pointer"
-                >
-                  <Copy className="w-4 h-4" />
-                  <span>{copiedNotice ? '✓ Copied to Clipboard!' : 'Copy WhatsApp Message'}</span>
-                </button>
-
-                <button
-                  onClick={() => {
-                    setIsShareModalOpen(false);
-                    setIsPrintNoticeOpen(true);
-                  }}
-                  className="w-full sm:flex-1 py-3 rounded-xl bg-[#14201B] hover:bg-[#1f3029] text-white text-xs font-bold flex items-center justify-center gap-2 shadow-sm cursor-pointer"
-                >
-                  <Printer className="w-4 h-4 text-[#12A176]" />
-                  <span>Print Formal Memo</span>
-                </button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-
-      {/* ================= MODAL 3: FORMAL PRINTABLE NOTICE MODAL ================= */}
-      <AnimatePresence>
-        {isPrintNoticeOpen && (
-          <div className="fixed inset-0 z-50 bg-[#14201B]/70 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto">
-            <motion.div
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white rounded-2xl border border-[#DCEAE3] p-8 w-full max-w-2xl shadow-xl space-y-6 my-8 text-[#14201B]"
-            >
-              <div className="flex items-center justify-between pb-4 border-b border-[#DCEAE3] print:hidden">
-                <span className="text-xs font-bold text-[#12A176] uppercase tracking-wider">
-                  Official Printable Document
-                </span>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => window.print()}
-                    className="px-4 py-2 rounded-xl bg-[#12A176] text-white text-xs font-bold shadow-sm flex items-center gap-2 cursor-pointer"
-                  >
-                    <Printer className="w-4 h-4" /> Print / Save PDF
-                  </button>
-                  <button
-                    onClick={() => setIsPrintNoticeOpen(false)}
-                    className="px-3 py-2 rounded-xl bg-[#F8FDFB] border border-[#DCEAE3] text-[#14201B] text-xs font-bold cursor-pointer"
-                  >
-                    Close
-                  </button>
-                </div>
-              </div>
-
-              <div className="text-center space-y-1 border-b-2 border-[#14201B] pb-4">
-                <h1 className="text-lg font-bold tracking-tight uppercase">
-                  DEPARTMENT OF INFORMATION TECHNOLOGY
-                </h1>
-                <p className="text-xs font-semibold text-[#5C6B63]">CAMPUS FACULTY PLATFORM • ATTENDANCE CELL</p>
-                <div className="flex items-center justify-between text-[11px] font-mono text-[#5C6B63] pt-2">
-                  <span>Date: {new Date().toLocaleDateString('en-US', { dateStyle: 'long' })}</span>
-                  <span>Ref No: IT/ATT/2026/DEF-04</span>
-                </div>
-              </div>
-
-              <div className="text-center space-y-1">
-                <h2 className="text-base font-bold underline tracking-tight uppercase">
-                  OFFICIAL ATTENDANCE DEFAULTER NOTICE (&lt; {targetThreshold}%)
-                </h2>
-                <p className="text-xs font-semibold text-[#5C6B63]">
-                  Class: {selectedClass} • Period: {selectedMonths.join(', ')}
-                </p>
-              </div>
-
-              <div className="border border-[#14201B] rounded-xl overflow-hidden">
-                <table className="w-full text-left text-xs font-sans">
-                  <thead className="bg-[#14201B] text-white font-semibold text-[11px] uppercase">
-                    <tr>
-                      <th className="p-2.5">Roll No</th>
-                      <th className="p-2.5">Student Name</th>
-                      <th className="p-2.5 text-center">Attendance %</th>
-                      <th className="p-2.5 text-center">Deficit Lectures Needed</th>
-                      <th className="p-2.5 text-center">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-[#DCEAE3]">
-                    {defaultersList.length === 0 ? (
-                      <tr>
-                        <td colSpan={5} className="p-4 text-center text-[#5C6B63]">
-                          No defaulter students flagged for the selected evaluation period.
-                        </td>
-                      </tr>
-                    ) : (
-                      defaultersList.map((st) => (
-                        <tr key={st.id}>
-                          <td className="p-2.5 font-mono font-bold">{st.rollNo}</td>
-                          <td className="p-2.5 font-semibold">{st.name}</td>
-                          <td className="p-2.5 text-center font-mono font-bold text-[#DB5B4E]">
-                            {st.dynamicStats.calculatedPct}%
-                          </td>
-                          <td className="p-2.5 text-center font-mono font-bold">
-                            +{st.dynamicStats.deficitLectures}
-                          </td>
-                          <td className="p-2.5 text-center font-bold text-[#DB5B4E]">DEFAULTER</td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-
-              <div className="pt-12 flex items-center justify-between text-xs font-semibold text-[#14201B]">
-                <div className="text-center space-y-8">
-                  <div className="border-b border-[#14201B] w-40 mx-auto" />
-                  <p>Class Teacher Coordinator</p>
-                </div>
-                <div className="text-center space-y-8">
-                  <div className="border-b border-[#14201B] w-40 mx-auto" />
-                  <p>Head of Department (IT)</p>
-                </div>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-
-      {/* ================= MODAL 4: DEFAULTER WAIVER POPUP ================= */}
-      <AnimatePresence>
-        {waiverStudent && (
-          <div className="fixed inset-0 z-50 bg-[#14201B]/50 backdrop-blur-sm flex items-center justify-center p-4">
-            <motion.div
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white rounded-2xl border border-[#DCEAE3] p-6 w-full max-w-md shadow-xl space-y-4"
-            >
-              <div className="flex items-center justify-between pb-3 border-b border-[#DCEAE3]">
-                <div className="flex items-center gap-2 text-[#14201B]">
-                  <Award className="w-5 h-5 text-[#12A176]" />
-                  <h3 className="font-bold text-base">Grant Attendance Waiver</h3>
-                </div>
-                <button
-                  onClick={() => setWaiverStudent(null)}
-                  className="text-[#5C6B63] hover:text-[#14201B] font-bold"
-                >
-                  ✕
-                </button>
-              </div>
-
-              <div className="p-3.5 rounded-xl bg-[#F8FDFB] border border-[#DCEAE3] flex items-center gap-3">
-                <img src={waiverStudent.avatar} alt={waiverStudent.name} className="w-10 h-10 rounded-xl object-cover" />
-                <div>
-                  <h4 className="font-bold text-sm text-[#14201B]">{waiverStudent.name}</h4>
-                  <p className="text-xs text-[#5C6B63]">Roll: {waiverStudent.rollNo} • Current: {waiverStudent.overallAttendance}%</p>
-                </div>
-              </div>
-
-              <div>
-                <label className="text-xs font-bold text-[#14201B] block mb-1">Reason for Exemption / Waiver</label>
-                <select
-                  value={waiverReason}
-                  onChange={(e) => setWaiverReason(e.target.value)}
-                  className="w-full p-2.5 rounded-xl bg-[#F8FDFB] border border-[#DCEAE3] text-xs font-semibold text-[#14201B] focus:outline-none focus:border-[#12A176]"
-                >
-                  <option value="Medical Certificate Submitted">Medical Certificate Submitted (Approved by Dean)</option>
-                  <option value="Inter-College Sports Duty">Inter-College Sports Duty Exemption</option>
-                  <option value="Special Academic Research Duty">Special Academic Research Exemption</option>
-                  <option value="Attendance Recalculation Correction">Attendance Recalculation Correction</option>
-                </select>
-              </div>
-
-              <div className="pt-2 flex items-center gap-2">
-                <button
-                  onClick={() => setWaiverStudent(null)}
-                  className="flex-1 py-2.5 rounded-xl bg-[#F8FDFB] hover:bg-[#E5F5EE] text-[#14201B] text-xs font-bold border border-[#DCEAE3]"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleGrantWaiver}
-                  className="flex-1 py-2.5 rounded-xl bg-[#12A176] hover:bg-[#0E8360] text-white text-xs font-bold shadow-sm cursor-pointer"
-                >
-                  Grant Exemption
-                </button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-
-      {/* ================= MODAL 1: CUSTOM DEFAULTER SETTINGS DRAWER ================= */}
-      <AnimatePresence>
-        {isSettingsOpen && (
-          <div className="fixed inset-0 z-50 bg-[#1A1025]/60 backdrop-blur-sm flex items-center justify-center p-4">
-            <motion.div
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white rounded-3xl border border-[#E8E3D9] p-6 w-full max-w-lg shadow-2xl space-y-5"
-            >
-              <div className="flex items-center justify-between pb-3 border-b border-[#E8E3D9]">
-                <div className="flex items-center gap-2 text-[#1A1025]">
-                  <SlidersHorizontal className="w-5 h-5 text-[#8B5CF6]" />
-                  <h3 className="font-black text-base font-['Plus_Jakarta_Sans']">
-                    Custom Defaulter Calculation Rules
-                  </h3>
-                </div>
-                <button
-                  onClick={() => setIsSettingsOpen(false)}
-                  className="text-[#6B6478] hover:text-[#1A1025] font-bold"
-                >
-                  ✕
-                </button>
-              </div>
-
-              {/* Target Percentage Threshold Slider */}
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <label className="text-xs font-bold text-[#1A1025]">
-                    Defaulter Threshold Target (%):
-                  </label>
-                  <span className="px-3 py-1 rounded-full bg-[#8B5CF6] text-white font-mono font-black text-xs">
-                    {targetThreshold}%
-                  </span>
-                </div>
-                <input
-                  type="range"
-                  min={50}
-                  max={90}
-                  step={1}
-                  value={targetThreshold}
-                  onChange={(e) => setTargetThreshold(Number(e.target.value))}
-                  className="w-full accent-[#8B5CF6] cursor-pointer"
-                />
-                <div className="flex justify-between text-[10px] text-[#6B6478] font-mono">
-                  <span>50% (Lenient)</span>
-                  <span>75% (Standard)</span>
-                  <span>85% (Strict)</span>
-                </div>
-              </div>
-
-              {/* Custom Weighting Mode Toggle */}
-              <div className="p-4 rounded-2xl bg-[#FBF9F4] border border-[#E8E3D9] space-y-3">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h4 className="text-xs font-extrabold text-[#1A1025]">Custom Session Weightage</h4>
-                    <p className="text-[11px] text-[#6B6478]">
-                      e.g., 1 Present session = X% direct credit toward final grade.
-                    </p>
-                  </div>
-                  <input
-                    type="checkbox"
-                    checked={customWeightMode}
-                    onChange={(e) => setCustomWeightMode(e.target.checked)}
-                    className="w-4 h-4 accent-[#8B5CF6] cursor-pointer"
-                  />
-                </div>
-
-                {customWeightMode && (
-                  <div className="pt-2 space-y-3 border-t border-[#E8E3D9]">
-                    <div className="flex items-center justify-between">
-                      <label className="text-xs font-semibold text-[#1A1025]">
-                        1 Present Session Credit (+%):
-                      </label>
-                      <input
-                        type="number"
-                        step="0.25"
-                        min="0.5"
-                        max="5"
-                        value={onePresentPctWeight}
-                        onChange={(e) => setOnePresentPctWeight(Number(e.target.value))}
-                        className="w-20 px-2 py-1 bg-white border border-[#E8E3D9] rounded-lg text-xs font-bold font-mono text-center text-[#10B981]"
-                      />
-                    </div>
-
-                    <div className="flex items-center justify-between">
-                      <label className="text-xs font-semibold text-[#1A1025]">
-                        1 Absent Session Penalty (-%):
-                      </label>
-                      <input
-                        type="number"
-                        step="0.25"
-                        min="0"
-                        max="5"
-                        value={oneAbsentPctPenalty}
-                        onChange={(e) => setOneAbsentPctPenalty(Number(e.target.value))}
-                        className="w-20 px-2 py-1 bg-white border border-[#E8E3D9] rounded-lg text-xs font-bold font-mono text-center text-[#F43F5E]"
-                      />
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* Grace Allowance Percentage */}
-              <div className="space-y-1">
-                <label className="text-xs font-bold text-[#1A1025] block">
-                  College Grace Allowance (Sports / NSS % Add-on):
-                </label>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="number"
-                    min="0"
-                    max="10"
-                    value={graceAllowancePct}
-                    onChange={(e) => setGraceAllowancePct(Number(e.target.value))}
-                    className="w-24 p-2 bg-[#FBF9F4] border border-[#E8E3D9] rounded-xl text-xs font-bold font-mono text-center"
-                  />
-                  <span className="text-xs text-[#6B6478] font-medium">% added to overall score</span>
-                </div>
-              </div>
-
-              <div className="pt-2">
-                <button
-                  onClick={() => setIsSettingsOpen(false)}
-                  className="w-full py-3 rounded-2xl bg-[#1A1025] hover:bg-[#2A1B3B] text-white text-xs font-extrabold shadow-md cursor-pointer"
-                >
-                  Save Criteria & Recalculate Matrix
-                </button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-
-      {/* ================= MODAL 2: WHATSAPP & GROUP NOTICE SHARE MODAL ================= */}
-      <AnimatePresence>
-        {isShareModalOpen && (
-          <div className="fixed inset-0 z-50 bg-[#1A1025]/60 backdrop-blur-sm flex items-center justify-center p-4">
-            <motion.div
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white rounded-3xl border border-[#E8E3D9] p-6 w-full max-w-lg shadow-2xl space-y-4"
-            >
-              <div className="flex items-center justify-between pb-3 border-b border-[#E8E3D9]">
-                <div className="flex items-center gap-2 text-[#1A1025]">
-                  <Share2 className="w-5 h-5 text-[#8B5CF6]" />
-                  <h3 className="font-black text-base font-['Plus_Jakarta_Sans']">
-                    Share Defaulter Notice to Class Group
-                  </h3>
-                </div>
-                <button
-                  onClick={() => setIsShareModalOpen(false)}
-                  className="text-[#6B6478] hover:text-[#1A1025] font-bold"
-                >
-                  ✕
-                </button>
-              </div>
-
-              <p className="text-xs text-[#6B6478] font-medium">
-                Copy formatted WhatsApp/Telegram notice or print an official departmental memo with 1-click.
-              </p>
-
-              {/* Notice Textarea Preview */}
-              <div className="p-3.5 rounded-2xl bg-[#1A1025] text-[#A3E635] font-mono text-xs leading-relaxed max-h-56 overflow-y-auto whitespace-pre-wrap border border-white/10 select-all">
-                {getWhatsAppNoticeText()}
-              </div>
-
-              <div className="pt-2 flex flex-col sm:flex-row items-center gap-2">
-                <button
-                  onClick={handleCopyWhatsAppText}
-                  className="w-full sm:flex-1 py-3 rounded-2xl bg-[#8B5CF6] hover:bg-[#7C3AED] text-white text-xs font-extrabold flex items-center justify-center gap-2 shadow-md cursor-pointer"
-                >
-                  <Copy className="w-4 h-4" />
-                  <span>{copiedNotice ? '✓ Copied to Clipboard!' : 'Copy WhatsApp Message'}</span>
-                </button>
-
-                <button
-                  onClick={() => {
-                    setIsShareModalOpen(false);
-                    setIsPrintNoticeOpen(true);
-                  }}
-                  className="w-full sm:flex-1 py-3 rounded-2xl bg-[#1A1025] hover:bg-[#2A1B3B] text-white text-xs font-extrabold flex items-center justify-center gap-2 shadow-md cursor-pointer"
-                >
-                  <Printer className="w-4 h-4 text-[#A3E635]" />
-                  <span>Print Formal Memo</span>
-                </button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-
-      {/* ================= MODAL 3: FORMAL PRINTABLE NOTICE MODAL ================= */}
-      <AnimatePresence>
-        {isPrintNoticeOpen && (
-          <div className="fixed inset-0 z-50 bg-[#1A1025]/80 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto">
-            <motion.div
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white rounded-3xl border border-[#E8E3D9] p-8 w-full max-w-2xl shadow-2xl space-y-6 my-8 text-[#1A1025]"
-            >
-              {/* Header Print Actions */}
-              <div className="flex items-center justify-between pb-4 border-b border-[#E8E3D9] print:hidden">
-                <span className="text-xs font-extrabold text-[#8B5CF6] uppercase tracking-wider">
-                  Official Printable Document
-                </span>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => window.print()}
-                    className="px-4 py-2 rounded-xl bg-[#8B5CF6] text-white text-xs font-bold shadow-sm flex items-center gap-2 cursor-pointer"
-                  >
-                    <Printer className="w-4 h-4" /> Print / Save PDF
-                  </button>
-                  <button
-                    onClick={() => setIsPrintNoticeOpen(false)}
-                    className="px-3 py-2 rounded-xl bg-[#FBF9F4] border border-[#E8E3D9] text-[#1A1025] text-xs font-bold cursor-pointer"
-                  >
-                    Close
-                  </button>
-                </div>
-              </div>
-
-              {/* FORMAL DEPARTMENT LETTERHEAD */}
-              <div className="text-center space-y-1 border-b-2 border-[#1A1025] pb-4">
-                <h1 className="text-lg font-black tracking-tight uppercase">
-                  DEPARTMENT OF INFORMATION TECHNOLOGY
-                </h1>
-                <p className="text-xs font-bold text-[#6B6478]">CAMPUS FACULTY PLATFORM • ATTENDANCE CELL</p>
-                <div className="flex items-center justify-between text-[11px] font-mono text-[#6B6478] pt-2">
-                  <span>Date: {new Date().toLocaleDateString('en-US', { dateStyle: 'long' })}</span>
-                  <span>Ref No: IT/ATT/2026/DEF-04</span>
-                </div>
-              </div>
-
-              {/* NOTICE TITLE */}
-              <div className="text-center space-y-1">
-                <h2 className="text-base font-black underline tracking-tight uppercase">
-                  OFFICIAL ATTENDANCE DEFAULTER NOTICE (&lt; {targetThreshold}%)
-                </h2>
-                <p className="text-xs font-semibold text-[#6B6478]">
-                  Class: {selectedClass} • Period: {selectedMonths.join(', ')}
-                </p>
-              </div>
-
-              {/* DEFAULTER TABLE */}
-              <div className="border border-[#1A1025] rounded-xl overflow-hidden">
-                <table className="w-full text-left text-xs font-sans">
-                  <thead className="bg-[#1A1025] text-white font-bold text-[11px] uppercase">
-                    <tr>
-                      <th className="p-2.5">Roll No</th>
-                      <th className="p-2.5">Student Name</th>
-                      <th className="p-2.5 text-center">Attendance %</th>
-                      <th className="p-2.5 text-center">Deficit Lectures Needed</th>
-                      <th className="p-2.5 text-center">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-[#E8E3D9]">
-                    {defaultersList.length === 0 ? (
-                      <tr>
-                        <td colSpan={5} className="p-4 text-center text-[#6B6478]">
-                          No defaulter students flagged for the selected evaluation period.
-                        </td>
-                      </tr>
-                    ) : (
-                      defaultersList.map((st) => (
-                        <tr key={st.id}>
-                          <td className="p-2.5 font-mono font-bold">{st.rollNo}</td>
-                          <td className="p-2.5 font-bold">{st.name}</td>
-                          <td className="p-2.5 text-center font-mono font-bold text-[#F43F5E]">
-                            {st.dynamicStats.calculatedPct}%
-                          </td>
-                          <td className="p-2.5 text-center font-mono font-bold">
-                            +{st.dynamicStats.deficitLectures}
-                          </td>
-                          <td className="p-2.5 text-center font-bold text-[#F43F5E]">DEFAULTER</td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-
-              {/* SIGNATURE SECTION */}
-              <div className="pt-12 flex items-center justify-between text-xs font-bold text-[#1A1025]">
-                <div className="text-center space-y-8">
-                  <div className="border-b border-[#1A1025] w-40 mx-auto" />
-                  <p>Class Teacher Coordinator</p>
-                </div>
-                <div className="text-center space-y-8">
-                  <div className="border-b border-[#1A1025] w-40 mx-auto" />
-                  <p>Head of Department (IT)</p>
-                </div>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-
-      {/* ================= MODAL 4: DEFAULTER WAIVER POPUP ================= */}
-      <AnimatePresence>
-        {waiverStudent && (
-          <div className="fixed inset-0 z-50 bg-[#1A1025]/60 backdrop-blur-sm flex items-center justify-center p-4">
-            <motion.div
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white rounded-3xl border border-[#E8E3D9] p-6 w-full max-w-md shadow-2xl space-y-4"
-            >
-              <div className="flex items-center justify-between pb-3 border-b border-[#E8E3D9]">
-                <div className="flex items-center gap-2 text-[#1A1025]">
-                  <Award className="w-5 h-5 text-[#8B5CF6]" />
-                  <h3 className="font-bold text-base font-['Plus_Jakarta_Sans']">Grant Attendance Waiver</h3>
-                </div>
-                <button
-                  onClick={() => setWaiverStudent(null)}
-                  className="text-[#6B6478] hover:text-[#1A1025] font-bold"
-                >
-                  ✕
-                </button>
-              </div>
-
-              <div className="p-3.5 rounded-2xl bg-[#FBF9F4] border border-[#E8E3D9] flex items-center gap-3">
-                <img src={waiverStudent.avatar} alt={waiverStudent.name} className="w-10 h-10 rounded-xl object-cover" />
-                <div>
-                  <h4 className="font-bold text-sm text-[#1A1025]">{waiverStudent.name}</h4>
-                  <p className="text-xs text-[#6B6478]">Roll: {waiverStudent.rollNo} • Current: {waiverStudent.overallAttendance}%</p>
-                </div>
-              </div>
-
-              <div>
-                <label className="text-xs font-bold text-[#1A1025] block mb-1">Reason for Exemption / Waiver</label>
-                <select
-                  value={waiverReason}
-                  onChange={(e) => setWaiverReason(e.target.value)}
-                  className="w-full p-2.5 rounded-xl bg-[#FBF9F4] border border-[#E8E3D9] text-xs font-semibold text-[#1A1025] focus:outline-none focus:border-[#8B5CF6]"
-                >
-                  <option value="Medical Certificate Submitted">Medical Certificate Submitted (Approved by Dean)</option>
-                  <option value="Inter-College Sports Duty">Inter-College Sports Duty Exemption</option>
-                  <option value="Special Academic Research Duty">Special Academic Research Exemption</option>
-                  <option value="Attendance Recalculation Correction">Attendance Recalculation Correction</option>
-                </select>
-              </div>
-
-              <div className="pt-2 flex items-center gap-2">
-                <button
-                  onClick={() => setWaiverStudent(null)}
-                  className="flex-1 py-2.5 rounded-xl bg-[#FBF9F4] hover:bg-[#E8E3D9]/50 text-[#1A1025] text-xs font-bold border border-[#E8E3D9]"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleGrantWaiver}
-                  className="flex-1 py-2.5 rounded-xl bg-[#1A1025] hover:bg-[#2A1B3B] text-white text-xs font-bold shadow-md cursor-pointer"
-                >
-                  Grant Exemption
-                </button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
+          )}
+        </>
+      )}
     </div>
   );
 };
