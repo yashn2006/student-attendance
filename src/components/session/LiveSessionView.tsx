@@ -9,13 +9,16 @@ import {
   ShieldCheck,
   Zap,
   Radio,
-  AlertCircle
+  AlertCircle,
+  Loader2
 } from 'lucide-react';
 import { useSession } from '../../context/SessionContext';
 import { useAuth } from '../../context/AuthContext';
 import { supabase } from '../../lib/supabase';
 import { SkeletonDashboardView } from '../common/Skeleton';
 import ComingSoon from '../common/ComingSoon';
+
+let classListCache: { teacherId: string; classes: any[] } | null = null;
 
 export const LiveSessionView: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
@@ -28,39 +31,75 @@ export const LiveSessionView: React.FC = () => {
   const { user, loading } = useAuth();
   const { activeSession, attendanceRecords, startSession, endSession } = useSession();
 
-  const [classes, setClasses] = useState<any[]>([]);
-  const [classesLoading, setClassesLoading] = useState(true);
+  const cachedClasses =
+    classListCache && user && classListCache.teacherId === user.id
+      ? classListCache.classes
+      : null;
+
+  const [classes, setClasses] = useState<any[]>(cachedClasses ?? []);
+  const [classesLoading, setClassesLoading] = useState(!cachedClasses);
+  const [classesError, setClassesError] = useState<string | null>(null);
 
   const teacherId = user?.id || '';
 
   useEffect(() => {
+    let cancelled = false;
+
     const fetchClasses = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+
+      if (cancelled) return;
+
+      if (!session) {
+        setClasses([]);
+        setClassesLoading(false);
+        return;
+      }
+
+      const cache = classListCache;
+      if (cache && cache.teacherId === session.user.id) {
+        setClasses(cache.classes);
+        setClassesLoading(false);
+        setClassesError(null);
+        return;
+      }
+
       setClassesLoading(true);
+      setClassesError(null);
+
       try {
-        const { data: { session } } = await supabase.auth.getSession();
         const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/class-list`, {
           headers: {
-            'Authorization': `Bearer ${session?.access_token}`,
+            'Authorization': `Bearer ${session.access_token}`,
           },
         });
-        const data = await response.json();
-        console.log('class-list status:', response.status, 'data:', data);
-        if (response.ok && data.status === 'ok' && Array.isArray(data.classes)) {
-          setClasses(data.classes);
-        } else {
-          setStartError(`Failed to fetch classes: ${data.error || response.statusText}`);
-          setClasses([]);
+        const data = await response.json().catch(() => null);
+
+        if (!response.ok || !data || data.status !== 'ok' || !Array.isArray(data.classes)) {
+          throw new Error(
+            data?.message || data?.error || response.statusText || `class-list failed (${response.status})`
+          );
         }
+
+        if (cancelled) return;
+
+        classListCache = { teacherId: session.user.id, classes: data.classes };
+        setClasses(data.classes);
       } catch (err) {
-        console.error('class-list fetch error:', err);
-        setStartError('Failed to fetch classes.');
+        if (cancelled) return;
+        setClasses([]);
+        setClassesError(err instanceof Error ? err.message : 'Failed to load classes.');
       } finally {
-        setClassesLoading(false);
+        if (!cancelled) setClassesLoading(false);
       }
     };
 
-    if (user) fetchClasses();
-  }, [user]);
+    fetchClasses();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
 
   const [selectedClassId, setSelectedClassId] = useState<string>('');
@@ -151,10 +190,20 @@ export const LiveSessionView: React.FC = () => {
           </p>
         </div>
 
-        {Array.isArray(classes) && classes.length === 0 ? (
+        {classesLoading ? (
+          <div className="p-4 rounded-xl bg-[#F8FDFB] border border-[#DCEAE3] text-xs text-[#5C6B63] font-medium flex items-center gap-2">
+            <Loader2 className="w-4 h-4 text-[#12A176] animate-spin" />
+            Loading classes…
+          </div>
+        ) : classesError ? (
+          <div className="p-4 rounded-xl bg-[#DB5B4E]/10 border border-[#DB5B4E]/30 text-xs font-bold text-[#DB5B4E] flex items-start gap-2">
+            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+            <span className="break-words">{classesError}</span>
+          </div>
+        ) : classes.length === 0 ? (
           <div className="p-4 rounded-xl bg-[#F8FDFB] border border-[#DCEAE3] text-xs text-[#5C6B63] font-medium flex items-center gap-2">
             <AlertCircle className="w-4 h-4 text-[#E0A23B]" />
-            No classes loaded yet.
+            No classes found.
           </div>
         ) : (
           <div className="flex flex-col md:flex-row gap-4">
