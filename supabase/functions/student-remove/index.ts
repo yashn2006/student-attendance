@@ -1,21 +1,29 @@
 // supabase/functions/student-remove/index.ts
 // Soft removal: deletes the class_enrollments row only. Does NOT delete
-// the students row, auth user, or attendance_records — keeps attendance
-// history intact even after a student leaves a class.
+// the students row, auth user, or attendance_records.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
-const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY");
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
+const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
 
-const supabaseAdmin = createClient(SUPABASE_URL ?? "", SERVICE_ROLE_KEY ?? "");
+const supabaseAdmin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function json(body: unknown, status: number) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+}
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -24,59 +32,54 @@ Deno.serve(async (req) => {
 
   try {
     const authHeader = req.headers.get("Authorization");
-    if (!authHeader) {
-      return new Response(JSON.stringify({ status: "error", message: "Missing auth" }), {
-        status: 401,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
+    if (!authHeader) return json({ status: "error", message: "Missing auth" }, 401);
 
-    const callerClient = createClient(SUPABASE_URL ?? "", ANON_KEY ?? "", {
+    const callerClient = createClient(SUPABASE_URL, ANON_KEY, {
       global: { headers: { Authorization: authHeader } },
     });
     const { data: { user: authUser }, error: authError } = await callerClient.auth.getUser();
-    if (authError || !authUser) {
-      return new Response(JSON.stringify({ status: "error", message: "Invalid session" }), {
-        status: 401,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
+    if (authError || !authUser) return json({ status: "error", message: "Invalid session" }, 401);
 
     const { data: teacherRow, error: teacherError } = await supabaseAdmin
       .from("teachers")
-      .select("id")
+      .select("id, is_admin")
       .eq("supabase_user", authUser.id)
-      .single();
+      .maybeSingle();
 
     if (teacherError || !teacherRow) {
-      return new Response(JSON.stringify({ status: "error", message: "Not a recognized teacher" }), {
-        status: 403,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      return json({ status: "error", message: "Not a recognized teacher" }, 403);
     }
 
-    const body = await req.json();
-    const { student_id, class_id } = body;
+    let body: Record<string, unknown>;
+    try {
+      body = await req.json();
+    } catch {
+      return json({ status: "error", message: "Invalid JSON body" }, 400);
+    }
+
+    const student_id = typeof body.student_id === "string" ? body.student_id.trim() : "";
+    const class_id = typeof body.class_id === "string" ? body.class_id.trim() : "";
 
     if (!student_id || !class_id) {
-      return new Response(JSON.stringify({ status: "error", message: "student_id and class_id required" }), {
-        status: 400,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      return json({ status: "error", message: "student_id and class_id required" }, 400);
+    }
+    if (!UUID_RE.test(student_id) || !UUID_RE.test(class_id)) {
+      return json({ status: "error", message: "student_id and class_id must be valid UUIDs" }, 400);
     }
 
-    const { data: classRow, error: classError } = await supabaseAdmin
+    let classQuery = supabaseAdmin
       .from("classes")
       .select("id")
-      .eq("id", class_id)
-      .eq("teacher_id", teacherRow.id)
-      .single();
+      .eq("id", class_id);
+    if (!teacherRow.is_admin) classQuery = classQuery.eq("teacher_id", teacherRow.id);
 
-    if (classError || !classRow) {
-      return new Response(JSON.stringify({ status: "error", message: "Class not found or not yours" }), {
-        status: 403,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+    const { data: classRow, error: classError } = await classQuery.maybeSingle();
+    if (classError) {
+      console.error("[student-remove] class lookup failed:", classError.message);
+      return json({ status: "error", message: "Failed to load class" }, 500);
+    }
+    if (!classRow) {
+      return json({ status: "error", message: "Class not found or not yours" }, 403);
     }
 
     const { error: deleteError } = await supabaseAdmin
@@ -86,21 +89,13 @@ Deno.serve(async (req) => {
       .eq("class_id", class_id);
 
     if (deleteError) {
-      return new Response(JSON.stringify({ status: "error", message: deleteError.message }), {
-        status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      console.error("[student-remove] delete failed:", deleteError.message);
+      return json({ status: "error", message: "Failed to remove student from class" }, 500);
     }
 
-    return new Response(JSON.stringify({ status: "ok", message: "Student removed from class" }), {
-      status: 200,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    return json({ status: "ok", message: "Student removed from class" }, 200);
   } catch (err) {
-    console.error("UNHANDLED ERROR:", err instanceof Error ? err.stack : err);
-    return new Response(
-      JSON.stringify({ status: "error", message: err instanceof Error ? err.message : "Unknown error" }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
+    console.error("[student-remove] unexpected:", err instanceof Error ? err.message : err);
+    return json({ status: "error", message: "Internal server error" }, 500);
   }
 });

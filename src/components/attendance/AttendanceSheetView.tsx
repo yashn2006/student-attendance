@@ -15,6 +15,7 @@ import {
   Loader2,
   AlertCircle,
   Inbox,
+  ClipboardList,
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../context/AuthContext';
@@ -22,7 +23,7 @@ import { SkeletonTable } from '../common/Skeleton';
 
 const PRESENT_THRESHOLD = 75;
 
-type TabKey = 'sheet' | 'rejected' | 'flags';
+type TabKey = 'sheet' | 'rejected' | 'flags' | 'manual';
 
 interface TeacherPair {
   classId: string;
@@ -93,6 +94,25 @@ interface SheetData {
   flags: AttendanceFlagRow[];
 }
 
+interface ManualMarkSessionRow {
+  id: string;
+  subject_id: string | null;
+  window_start: string;
+}
+
+interface ManualMarkRow {
+  id: string;
+  createdAt: string | null;
+  sessionStart: string | null;
+  subjectName: string;
+  subjectCode: string | null;
+  studentName: string;
+  enrollmentNo: string;
+  reason: string;
+  note: string;
+  teacherName: string;
+}
+
 const EMPTY_DATA: SheetData = {
   sessions: [],
   enrolledStudentIds: [],
@@ -132,6 +152,18 @@ function formatDateTime(iso: string | null): string {
 
 function sessionLabel(iso: string): string {
   return `${formatDate(iso)} ${formatTime(iso)}`;
+}
+
+const OVERRIDE_REASON_LABELS: Record<string, string> = {
+  late: 'Late',
+  device_issue: 'Device issue',
+  no_passkey: 'No passkey',
+  other: 'Other',
+};
+
+function formatOverrideReason(reason: string | null): string {
+  if (!reason) return '—';
+  return OVERRIDE_REASON_LABELS[reason] ?? reason.replace(/_/g, ' ');
 }
 
 function csvCell(value: unknown): string {
@@ -222,6 +254,9 @@ export const AttendanceSheetView: React.FC = () => {
   const [data, setData] = useState<SheetData>(EMPTY_DATA);
   const [dataLoading, setDataLoading] = useState(false);
   const [dataError, setDataError] = useState<unknown>(null);
+  const [manualMarks, setManualMarks] = useState<ManualMarkRow[]>([]);
+  const [manualMarksLoading, setManualMarksLoading] = useState(false);
+  const [manualMarksError, setManualMarksError] = useState<unknown>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [activeTab, setActiveTab] = useState<TabKey>('sheet');
 
@@ -471,6 +506,158 @@ export const AttendanceSheetView: React.FC = () => {
     [pairs, selectedClassId, selectedSubjectId]
   );
 
+  useEffect(() => {
+    if (!teacherId || !selectedClassId || !dateFrom || !dateTo) {
+      setManualMarks([]);
+      setManualMarksError(null);
+      setManualMarksLoading(false);
+      return;
+    }
+
+    if (dateFrom > dateTo) {
+      setManualMarks([]);
+      setManualMarksError(new Error('Start date must be on or before the end date.'));
+      setManualMarksLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setManualMarksLoading(true);
+    setManualMarksError(null);
+
+    (async () => {
+      try {
+        const rangeStart = new Date(`${dateFrom}T00:00:00`).toISOString();
+        const rangeEnd = new Date(`${dateTo}T23:59:59.999`).toISOString();
+
+        const { data: sessionRows, error: sessionError } = await supabase
+          .from('sessions')
+          .select('id, subject_id, window_start')
+          .eq('class_id', selectedClassId)
+          .gte('window_start', rangeStart)
+          .lte('window_start', rangeEnd);
+
+        if (sessionError) throw sessionError;
+
+        const sessions = (sessionRows ?? []) as ManualMarkSessionRow[];
+        if (sessions.length === 0) {
+          if (!cancelled) setManualMarks([]);
+          return;
+        }
+
+        const sessionIds = sessions.map((session) => session.id);
+        const overrides = await fetchAllRows<AttendanceOverrideRow>((from, to) =>
+          supabase
+            .from('attendance_overrides')
+            .select('id, session_id, student_id, teacher_id, reason, reason_note, created_at')
+            .in('session_id', sessionIds)
+            .order('created_at', { ascending: false })
+            .range(from, to)
+        );
+
+        const studentIds = Array.from(
+          new Set(overrides.map((row) => row.student_id).filter(Boolean))
+        );
+        const teacherIds = Array.from(
+          new Set(overrides.map((row) => row.teacher_id).filter(Boolean))
+        ) as string[];
+        const subjectIds = Array.from(
+          new Set(sessions.map((row) => row.subject_id).filter(Boolean))
+        ) as string[];
+
+        const students =
+          studentIds.length > 0
+            ? await fetchAllRows<StudentRow>((from, to) =>
+                supabase
+                  .from('students')
+                  .select('id, name, email, enrollment_no')
+                  .in('id', studentIds)
+                  .range(from, to)
+              )
+            : [];
+
+        let teachers: { id: string; name: string | null }[] = [];
+        if (teacherIds.length > 0) {
+          const { data, error } = await supabase
+            .from('teachers')
+            .select('id, name')
+            .in('id', teacherIds);
+          if (error) {
+            console.error('[AttendanceSheetView] teacher lookup failed:', error);
+          } else {
+            teachers = (data ?? []) as { id: string; name: string | null }[];
+          }
+        }
+
+        let subjects: { id: string; name: string | null; code: string | null }[] = [];
+        if (subjectIds.length > 0) {
+          const { data, error } = await supabase
+            .from('subjects')
+            .select('id, name, code')
+            .in('id', subjectIds);
+          if (error) {
+            console.error('[AttendanceSheetView] subject lookup failed:', error);
+          } else {
+            subjects = (data ?? []) as {
+              id: string;
+              name: string | null;
+              code: string | null;
+            }[];
+          }
+        }
+
+        if (cancelled) return;
+
+        const sessionById = new Map(sessions.map((session) => [session.id, session]));
+        const studentById = new Map(students.map((student) => [student.id, student]));
+        const teacherById = new Map(teachers.map((teacher) => [teacher.id, teacher]));
+        const subjectById = new Map(subjects.map((subject) => [subject.id, subject]));
+
+        const rows: ManualMarkRow[] = overrides.map((override) => {
+          const session = sessionById.get(override.session_id);
+          const student = studentById.get(override.student_id);
+          const subject = session?.subject_id ? subjectById.get(session.subject_id) : null;
+          const teacherName =
+            (override.teacher_id ? teacherById.get(override.teacher_id)?.name : null) ||
+            (override.teacher_id === teacherId ? user?.name : null) ||
+            null;
+
+          return {
+            id: override.id,
+            createdAt: override.created_at,
+            sessionStart: session?.window_start ?? null,
+            subjectName: subject?.name?.trim() || '—',
+            subjectCode: subject?.code?.trim() || null,
+            studentName: student?.name?.trim() || 'Unknown student',
+            enrollmentNo: student?.enrollment_no?.trim() || '—',
+            reason: formatOverrideReason(override.reason),
+            note: override.reason_note?.trim() || '—',
+            teacherName: teacherName?.trim() || '—',
+          };
+        });
+
+        rows.sort((a, b) => {
+          const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+          const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+          return bTime - aTime;
+        });
+
+        setManualMarks(rows);
+      } catch (err) {
+        if (!cancelled) {
+          setManualMarks([]);
+          setManualMarksError(err);
+        }
+      } finally {
+        if (!cancelled) setManualMarksLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [teacherId, user?.name, selectedClassId, dateFrom, dateTo, refreshKey]);
+
   const studentById = useMemo(() => {
     const map = new Map<string, StudentRow>();
     for (const student of data.students) map.set(student.id, student);
@@ -618,6 +805,23 @@ export const AttendanceSheetView: React.FC = () => {
         ]),
       ];
       downloadCsv(`rejected_attempts_${base}.csv`, rows);
+      return;
+    }
+
+    if (activeTab === 'manual') {
+      const rows: unknown[][] = [
+        ['Date', 'Subject', 'Enrollment No', 'Student Name', 'Reason', 'Note', 'Marked By'],
+        ...manualMarks.map((mark) => [
+          formatDate(mark.sessionStart),
+          mark.subjectCode ? `${mark.subjectName} (${mark.subjectCode})` : mark.subjectName,
+          mark.enrollmentNo,
+          mark.studentName,
+          mark.reason,
+          mark.note,
+          mark.teacherName,
+        ]),
+      ];
+      downloadCsv(`manual_marks_${base}.csv`, rows);
       return;
     }
 
@@ -875,6 +1079,17 @@ export const AttendanceSheetView: React.FC = () => {
                   }`}
                 >
                   <Flag className="w-3.5 h-3.5 inline mr-1.5" /> Flags ({sortedFlags.length})
+                </button>
+                <button
+                  onClick={() => setActiveTab('manual')}
+                  className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                    activeTab === 'manual'
+                      ? 'bg-[#14201B] text-white shadow-sm'
+                      : 'text-[#5C6B63] hover:text-[#14201B]'
+                  }`}
+                >
+                  <ClipboardList className="w-3.5 h-3.5 inline mr-1.5" /> Manual marks (
+                  {manualMarks.length})
                 </button>
               </div>
 
@@ -1197,6 +1412,76 @@ export const AttendanceSheetView: React.FC = () => {
                               </tr>
                             );
                           })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </>
+              )}
+
+              {activeTab === 'manual' && (
+                <>
+                  {manualMarksError ? (
+                    renderError(manualMarksError, handleRefresh)
+                  ) : manualMarksLoading ? (
+                    <SkeletonTable rows={5} />
+                  ) : manualMarks.length === 0 ? (
+                    emptyState(
+                      'No manual marks',
+                      'No attendance overrides were recorded for this class and date range.'
+                    )
+                  ) : (
+                    <div className="overflow-x-auto max-w-full rounded-xl border border-[#DCEAE3]">
+                      <table className="w-full text-left border-collapse font-sans min-w-[940px]">
+                        <thead>
+                          <tr className="bg-[#14201B] text-white text-[10px] font-semibold uppercase tracking-wider">
+                            <th className="p-3 min-w-[120px] border-r border-white/10">Date</th>
+                            <th className="p-3 min-w-[160px] border-r border-white/10">Subject</th>
+                            <th className="p-3 min-w-[110px] border-r border-white/10">Enrollment</th>
+                            <th className="p-3 min-w-[170px] border-r border-white/10">Student</th>
+                            <th className="p-3 min-w-[130px] border-r border-white/10">Reason</th>
+                            <th className="p-3 min-w-[200px] border-r border-white/10">Note</th>
+                            <th className="p-3 min-w-[150px]">Marked by</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-[#DCEAE3] text-xs">
+                          {manualMarks.map((mark, index) => (
+                            <tr
+                              key={mark.id}
+                              className={index % 2 === 0 ? 'bg-white' : 'bg-[#F8FDFB]'}
+                            >
+                              <td className="p-3 font-mono text-[#5C6B63] border-r border-[#DCEAE3] whitespace-nowrap">
+                                {formatDate(mark.sessionStart)}
+                              </td>
+                              <td className="p-3 border-r border-[#DCEAE3]">
+                                <span className="font-semibold text-[#14201B] block">
+                                  {mark.subjectName}
+                                </span>
+                                {mark.subjectCode && (
+                                  <span className="text-[10px] text-[#5C6B63] font-mono">
+                                    {mark.subjectCode}
+                                  </span>
+                                )}
+                              </td>
+                              <td className="p-3 font-mono font-semibold text-[#14201B] border-r border-[#DCEAE3] whitespace-nowrap">
+                                {mark.enrollmentNo}
+                              </td>
+                              <td className="p-3 font-semibold text-[#14201B] border-r border-[#DCEAE3]">
+                                {mark.studentName}
+                              </td>
+                              <td className="p-3 border-r border-[#DCEAE3]">
+                                <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg bg-[#4E7FD6]/10 text-[#4E7FD6] font-semibold text-[10px]">
+                                  {mark.reason}
+                                </span>
+                              </td>
+                              <td className="p-3 text-[#5C6B63] border-r border-[#DCEAE3] break-words">
+                                {mark.note}
+                              </td>
+                              <td className="p-3 text-[#14201B] font-semibold">
+                                {mark.teacherName}
+                              </td>
+                            </tr>
+                          ))}
                         </tbody>
                       </table>
                     </div>

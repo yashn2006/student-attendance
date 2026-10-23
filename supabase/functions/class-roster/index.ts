@@ -1,16 +1,21 @@
 // supabase/functions/class-roster/index.ts
+// Class roster for the class owner or an admin.
+
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
-const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY");
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
+const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+const ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
 
-const supabaseAdmin = createClient(SUPABASE_URL ?? "", SERVICE_ROLE_KEY ?? "");
+const supabaseAdmin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "GET, OPTIONS",
 };
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function jsonResponse(body: unknown, status: number) {
   return new Response(JSON.stringify(body), {
@@ -26,23 +31,19 @@ Deno.serve(async (req) => {
 
   try {
     const authHeader = req.headers.get("Authorization");
-    if (!authHeader) {
-      return jsonResponse({ status: "error", message: "Missing auth" }, 401);
-    }
+    if (!authHeader) return jsonResponse({ status: "error", message: "Missing auth" }, 401);
 
-    const callerClient = createClient(SUPABASE_URL ?? "", ANON_KEY ?? "", {
+    const callerClient = createClient(SUPABASE_URL, ANON_KEY, {
       global: { headers: { Authorization: authHeader } },
     });
     const { data: { user: authUser }, error: authError } = await callerClient.auth.getUser();
-    if (authError || !authUser) {
-      return jsonResponse({ status: "error", message: "Invalid session" }, 401);
-    }
+    if (authError || !authUser) return jsonResponse({ status: "error", message: "Invalid session" }, 401);
 
     const { data: teacherRow, error: teacherError } = await supabaseAdmin
       .from("teachers")
-      .select("id")
+      .select("id, is_admin")
       .eq("supabase_user", authUser.id)
-      .single();
+      .maybeSingle();
 
     if (teacherError || !teacherRow) {
       return jsonResponse({ status: "error", message: "Not a recognized teacher" }, 403);
@@ -50,18 +51,23 @@ Deno.serve(async (req) => {
 
     const url = new URL(req.url);
     const classId = url.searchParams.get("class_id");
-    if (!classId) {
-      return jsonResponse({ status: "error", message: "class_id required" }, 400);
+    if (!classId) return jsonResponse({ status: "error", message: "class_id required" }, 400);
+    if (!UUID_RE.test(classId)) {
+      return jsonResponse({ status: "error", message: "class_id must be a valid UUID" }, 400);
     }
 
-    const { data: classRow, error: classError } = await supabaseAdmin
+    let classQuery = supabaseAdmin
       .from("classes")
-      .select("id, name")
-      .eq("id", classId)
-      .eq("teacher_id", teacherRow.id)
-      .single();
+      .select("id, name, teacher_id")
+      .eq("id", classId);
+    if (!teacherRow.is_admin) classQuery = classQuery.eq("teacher_id", teacherRow.id);
 
-    if (classError || !classRow) {
+    const { data: classRow, error: classError } = await classQuery.maybeSingle();
+    if (classError) {
+      console.error("[class-roster] class lookup failed:", classError.message);
+      return jsonResponse({ status: "error", message: "Failed to load class" }, 500);
+    }
+    if (!classRow) {
       return jsonResponse({ status: "error", message: "Class not found or not yours" }, 403);
     }
 
@@ -71,7 +77,8 @@ Deno.serve(async (req) => {
       .eq("class_id", classId);
 
     if (enrollError) {
-      return jsonResponse({ status: "error", message: enrollError.message }, 500);
+      console.error("[class-roster] enrollment lookup failed:", enrollError.message);
+      return jsonResponse({ status: "error", message: "Failed to load roster" }, 500);
     }
 
     const studentIds = (enrollments ?? []).map((e) => e.student_id);
@@ -85,13 +92,19 @@ Deno.serve(async (req) => {
       .in("id", studentIds);
 
     if (studentError) {
-      return jsonResponse({ status: "error", message: studentError.message }, 500);
+      console.error("[class-roster] student lookup failed:", studentError.message);
+      return jsonResponse({ status: "error", message: "Failed to load roster" }, 500);
     }
 
-    const { data: records } = await supabaseAdmin
+    const { data: records, error: recordsError } = await supabaseAdmin
       .from("attendance_records")
       .select("student_id, status, created_at")
       .in("student_id", studentIds);
+
+    if (recordsError) {
+      console.error("[class-roster] attendance lookup failed:", recordsError.message);
+      return jsonResponse({ status: "error", message: "Failed to load roster" }, 500);
+    }
 
     const recordsByStudent: Record<string, typeof records> = {};
     for (const r of records ?? []) {
@@ -116,10 +129,7 @@ Deno.serve(async (req) => {
 
     return jsonResponse({ status: "ok", className: classRow.name, students: result }, 200);
   } catch (err) {
-    console.error("UNHANDLED ERROR:", err instanceof Error ? err.stack : err);
-    return jsonResponse(
-      { status: "error", message: err instanceof Error ? err.message : "Unknown error" },
-      500
-    );
+    console.error("[class-roster] unexpected:", err instanceof Error ? err.message : err);
+    return jsonResponse({ status: "error", message: "Internal server error" }, 500);
   }
 });

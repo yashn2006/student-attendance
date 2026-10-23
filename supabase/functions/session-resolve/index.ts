@@ -1,11 +1,6 @@
 // POST /functions/v1/session-resolve
-// Resolves a student-facing entry point (typed 6-digit code, or a scanned
-// QR payload carrying the raw sessionId) into a validated session.
-//
-// This is the single funnel both the QR path and manual-code path go
-// through before the client proceeds to WebAuthn verification. It never
-// trusts client-side timers — every expiry check happens here, against
-// server state, per the device-attendance-flow SKILL.md.
+// Resolves a typed 6-digit code or scanned sessionId for the authenticated
+// student. Students must be enrolled in the session's class.
 
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -15,6 +10,7 @@ const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")
   ?? (Deno.env.get("SUPABASE_SECRET_KEYS")
     ? (JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS")!)).default
     : "");
+const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -22,9 +18,19 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const CODE_RE = /^\d{6}$/;
+
+function json(body: unknown, status: number) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+  });
+}
+
 interface ResolveRequest {
-  code?: string;
-  sessionId?: string;
+  code?: unknown;
+  sessionId?: unknown;
 }
 
 serve(async (req: Request): Promise<Response> => {
@@ -33,122 +39,147 @@ serve(async (req: Request): Promise<Response> => {
   }
 
   try {
-    const body: ResolveRequest = await req.json();
-    const { code, sessionId } = body;
-
-    if (!code && !sessionId) {
-      return new Response(
-        JSON.stringify({ status: "error", message: "Either code or sessionId is required" }),
-        { status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
-      );
-    }
-
     if (!SUPABASE_SERVICE_ROLE_KEY) {
-      return new Response(
-        JSON.stringify({ status: "error", message: "Service role key not configured" }),
-        { status: 500, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
-      );
+      return json({ status: "error", message: "Internal server error" }, 500);
     }
+
+    const authHeader = req.headers.get("Authorization");
+    if (!authHeader) return json({ status: "error", message: "Missing auth" }, 401);
+
+    const callerClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      global: { headers: { Authorization: authHeader } },
+    });
+    const { data: { user: authUser }, error: authError } = await callerClient.auth.getUser();
+    if (authError || !authUser) return json({ status: "error", message: "Invalid session" }, 401);
 
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
-    // ---- QR path: sessionId is already known, just validate it. ----
+    const { data: studentRow, error: studentError } = await supabase
+      .from("students")
+      .select("id")
+      .eq("supabase_user", authUser.id)
+      .maybeSingle();
+
+    if (studentError) {
+      console.error("[session-resolve] student lookup failed:", studentError.message);
+      return json({ status: "error", message: "Failed to authorize request" }, 500);
+    }
+    if (!studentRow) return json({ status: "error", message: "Not a recognized student" }, 403);
+
+    let body: ResolveRequest;
+    try {
+      body = await req.json();
+    } catch {
+      return json({ status: "error", message: "Invalid JSON body" }, 400);
+    }
+
+    const code = typeof body.code === "string" ? body.code.trim() : "";
+    const sessionId = typeof body.sessionId === "string" ? body.sessionId.trim() : "";
+
+    if (!code && !sessionId) {
+      return json({ status: "error", message: "Either code or sessionId is required" }, 400);
+    }
+    if (code && sessionId) {
+      return json({ status: "error", message: "Provide either code or sessionId, not both" }, 400);
+    }
+    if (code && !CODE_RE.test(code)) {
+      return json({ status: "error", message: "code must be 6 digits" }, 400);
+    }
+    if (sessionId && !UUID_RE.test(sessionId)) {
+      return json({ status: "error", message: "sessionId must be a valid UUID" }, 400);
+    }
+
+    let session: {
+      id: string;
+      class_id: string;
+      teacher_id: string;
+      status: string;
+      window_end: string | null;
+      current_code?: string;
+      code_expires_at?: string | null;
+    } | null = null;
+
     if (sessionId) {
-      const { data: session, error } = await supabase
+      const { data, error } = await supabase
         .from("sessions")
         .select("id, class_id, teacher_id, status, window_end")
         .eq("id", sessionId)
-        .single();
+        .maybeSingle();
 
-      if (error || !session) {
-        return new Response(
-          JSON.stringify({ status: "error", message: "Session not found" }),
-          { status: 404, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
-        );
+      if (error) {
+        console.error("[session-resolve] session lookup failed:", error.message);
+        return json({ status: "error", message: "Failed to load session" }, 500);
       }
+      session = data;
+    } else {
+      const { data, error } = await supabase
+        .from("sessions")
+        .select("id, class_id, teacher_id, status, window_end, current_code, code_expires_at")
+        .eq("current_code", code)
+        .eq("status", "active")
+        .limit(1)
+        .maybeSingle();
 
-      const expired = session.status !== "active"
-        || (session.window_end && new Date(session.window_end).getTime() < Date.now());
-
-      if (expired) {
-        if (session.status === "active") {
-          await supabase.from("sessions").update({ status: "closed" }).eq("id", session.id);
-        }
-        return new Response(
-          JSON.stringify({ status: "error", message: "This session has ended" }),
-          { status: 410, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
-        );
+      if (error) {
+        console.error("[session-resolve] code lookup failed:", error.message);
+        return json({ status: "error", message: "Failed to load session" }, 500);
       }
-
-      return new Response(
-        JSON.stringify({
-          sessionId: session.id,
-          classId: session.class_id,
-          teacherId: session.teacher_id,
-          windowEnd: session.window_end,
-        }),
-        { status: 200, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
-      );
-    }
-
-    // ---- Code path: look up the currently-active session with this code. ----
-    const normalizedCode = code!.trim();
-
-    const { data: session, error } = await supabase
-      .from("sessions")
-      .select("id, class_id, teacher_id, status, window_end, current_code, code_expires_at")
-      .eq("current_code", normalizedCode)
-      .eq("status", "active")
-      .maybeSingle();
-
-    if (error) {
-      return new Response(
-        JSON.stringify({ status: "error", message: "Lookup failed" }),
-        { status: 500, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
-      );
+      session = data;
     }
 
     if (!session) {
-      return new Response(
-        JSON.stringify({ status: "error", message: "Invalid or expired code" }),
-        { status: 404, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
-      );
+      return json({ status: "error", message: "Invalid or expired code" }, 404);
     }
 
     const now = Date.now();
-    const codeExpired = !session.code_expires_at || new Date(session.code_expires_at).getTime() < now;
-    const windowExpired = session.window_end && new Date(session.window_end).getTime() < now;
+    const expired = session.status !== "active"
+      || (session.window_end && new Date(session.window_end).getTime() < now);
 
-    if (windowExpired) {
-      await supabase.from("sessions").update({ status: "closed" }).eq("id", session.id);
-      return new Response(
-        JSON.stringify({ status: "error", message: "This session has ended" }),
-        { status: 410, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
-      );
+    if (expired) {
+      if (session.status === "active") {
+        const { error: closeErr } = await supabase
+          .from("sessions")
+          .update({ status: "closed" })
+          .eq("id", session.id);
+        if (closeErr) console.error("[session-resolve] close error:", closeErr.message);
+      }
+      return json({ status: "error", message: "This session has ended" }, 410);
     }
 
-    if (codeExpired) {
-      // The code rotated since the student read/typed it — don't resolve.
-      // The client should prompt them to re-check the current code.
-      return new Response(
-        JSON.stringify({ status: "error", message: "Code has expired, please check the current code" }),
-        { status: 410, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
-      );
+    if (!sessionId) {
+      const codeExpired = !session.code_expires_at
+        || new Date(session.code_expires_at).getTime() < now;
+      if (codeExpired) {
+        return json(
+          { status: "error", message: "Code has expired, please check the current code" },
+          410,
+        );
+      }
     }
 
-    return new Response(
-      JSON.stringify({
-        sessionId: session.id,
-        classId: session.class_id,
-        teacherId: session.teacher_id,
-        windowEnd: session.window_end,
-      }),
-      { status: 200, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
-    );
-  } catch (_err) {
-    return new Response(
-      JSON.stringify({ status: "error", message: "Internal server error" }),
-      { status: 500, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
-    );
+    const { data: enrollment, error: enrollError } = await supabase
+      .from("class_enrollments")
+      .select("class_id")
+      .eq("class_id", session.class_id)
+      .eq("student_id", studentRow.id)
+      .maybeSingle();
+
+    if (enrollError) {
+      console.error("[session-resolve] enrollment lookup failed:", enrollError.message);
+      return json({ status: "error", message: "Failed to authorize request" }, 500);
+    }
+    if (!enrollment) {
+      return json({ status: "error", message: "You are not enrolled in this session's class" }, 403);
+    }
+
+    return json({
+      sessionId: session.id,
+      classId: session.class_id,
+      teacherId: session.teacher_id,
+      windowEnd: session.window_end,
+    }, 200);
+  } catch (err) {
+    console.error("[session-resolve] unexpected:", err instanceof Error ? err.message : err);
+    return json({ status: "error", message: "Internal server error" }, 500);
   }
 });

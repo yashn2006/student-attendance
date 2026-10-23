@@ -3,6 +3,9 @@
 // Creates a session row, generates the first rotating 6-digit code with
 // expiry-at-generation-time (per device-attendance-flow SKILL.md), and
 // validates that the class exists and belongs to the requesting teacher.
+//
+// Identity is derived ONLY from the verified JWT. Any teacherId supplied in
+// the body is ignored, so a caller cannot start sessions as another teacher.
 
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -12,6 +15,7 @@ const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")
 ?? (Deno.env.get("SUPABASE_SECRET_KEYS")
 ? (JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS")!)).default
 : "");
+const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
 
 const CORS_HEADERS = {
 "Access-Control-Allow-Origin": "*",
@@ -22,14 +26,22 @@ const CORS_HEADERS = {
 const SESSION_WINDOW_MS = 5 * 60 * 1000;
 const CODE_TTL_MS = 15 * 1000;
 const MAX_CODE_ATTEMPTS = 5;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function generateCode(): string {
 return String(Math.floor(100000 + Math.random() * 900000));
 }
 
+function json(body: unknown, status: number) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+  });
+}
+
 interface SessionStartRequest {
   classId: string;
-  teacherId: string;
+  teacherId?: string | null;
   subjectId?: string | null;
 }
 
@@ -103,160 +115,151 @@ return new Response(null, { headers: CORS_HEADERS });
 }
 
 try {
-// 1. request body logging
-const body: SessionStartRequest = await req.json();
-const { classId, teacherId, subjectId } = body;
-console.log("[session-start] request body =", JSON.stringify({ classId, teacherId }));
-console.log("[session-start] classId type:", typeof classId, "| teacherId type:", typeof teacherId);
+  if (!SUPABASE_SERVICE_ROLE_KEY) {
+    return json({ status: "error", message: "Internal server error" }, 500);
+  }
 
-// 2. validation
-if (!classId || !teacherId) {
-  return new Response(
-    JSON.stringify({ status: "error", message: "Missing classId or teacherId" }),
-    { status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
-  );
-}
+  // 1. Verify the caller's JWT. Identity must come from the token only.
+  const authHeader = req.headers.get("Authorization");
+  if (!authHeader) {
+    return json({ status: "error", message: "Missing auth" }, 401);
+  }
 
-// 3. key logging and supabase client
-const legacyKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-const keysJson = Deno.env.get("SUPABASE_SECRET_KEYS");
-console.log("[session-start] legacy SUPABASE_SERVICE_ROLE_KEY present:", legacyKey ? `yes (len=${legacyKey.length})` : "NO");
-console.log("[session-start] SUPABASE_SECRET_KEYS present:", keysJson ? "yes" : "NO");
-console.log("[session-start] resolved key length =", (SUPABASE_SERVICE_ROLE_KEY || "").length);
+  const callerClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    global: { headers: { Authorization: authHeader } },
+  });
+  const { data: { user: authUser }, error: authError } = await callerClient.auth.getUser();
+  if (authError || !authUser) {
+    return json({ status: "error", message: "Invalid session" }, 401);
+  }
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+  const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
-if (!SUPABASE_SERVICE_ROLE_KEY) {
-  return new Response(
-    JSON.stringify({ status: "error", message: "Service role key not configured" }),
-    { status: 500, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
-  );
-}
+  const { data: teacherRow, error: teacherError } = await supabase
+    .from("teachers")
+    .select("id, is_admin")
+    .eq("supabase_user", authUser.id)
+    .maybeSingle();
 
-// 4. class lookup
-console.log("[session-start] querying classes table with filters:", JSON.stringify({ id: classId }));
-const { data: cls, error: clsErr } = await supabase
-      .from("classes")
-      .select("id, teacher_id, name, section")
-      .eq("id", classId)
+  if (teacherError) {
+    console.error("[session-start] teacher lookup failed:", teacherError.message);
+    return json({ status: "error", message: "Failed to authorize request" }, 500);
+  }
+  if (!teacherRow) {
+    return json({ status: "error", message: "Not a recognized teacher" }, 403);
+  }
+
+  // 2. Parse and validate the body.
+  let body: SessionStartRequest;
+  try {
+    body = await req.json();
+  } catch {
+    return json({ status: "error", message: "Invalid JSON body" }, 400);
+  }
+
+  const classId = typeof body.classId === "string" ? body.classId.trim() : "";
+  const subjectId = typeof body.subjectId === "string" ? body.subjectId.trim() : "";
+  const teacherId = teacherRow.id;
+
+  if (!classId) {
+    return json({ status: "error", message: "Missing classId" }, 400);
+  }
+  if (!UUID_RE.test(classId)) {
+    return json({ status: "error", message: "classId must be a valid UUID" }, 400);
+  }
+  if (subjectId && !UUID_RE.test(subjectId)) {
+    return json({ status: "error", message: "subjectId must be a valid UUID" }, 400);
+  }
+
+  // 3. Class lookup.
+  const { data: cls, error: clsErr } = await supabase
+        .from("classes")
+        .select("id, teacher_id, name, section")
+        .eq("id", classId)
+        .single();
+
+  if (clsErr || !cls) {
+    return json({ status: "error", message: "Class not found" }, 404);
+  }
+
+  // 4. Authorization: class teacher, or a teacher assigned to this class/subject.
+  const isClassTeacher = cls.teacher_id === teacherId;
+  if (!isClassTeacher) {
+    let assignmentQuery = supabase
+      .from("class_subject_teachers")
+      .select("id")
+      .eq("class_id", classId)
+      .eq("teacher_id", teacherId);
+    if (subjectId) assignmentQuery = assignmentQuery.eq("subject_id", subjectId);
+
+    const { data: assignments, error: assignErr } = await assignmentQuery.limit(1);
+    if (assignErr) {
+      console.error("[session-start] assignment lookup failed:", assignErr.message);
+      return json({ status: "error", message: "Failed to verify teacher assignment" }, 500);
+    }
+    if (!assignments || assignments.length === 0) {
+      return json({ status: "error", message: "Teacher is not assigned to this class/subject" }, 403);
+    }
+  }
+
+  // 5. Session insert.
+  const now = new Date();
+  const windowStart = now.toISOString();
+  const windowEnd = new Date(now.getTime() + SESSION_WINDOW_MS).toISOString();
+  const codeExpiresAt = new Date(now.getTime() + CODE_TTL_MS).toISOString();
+
+  let session: { id: string; window_start: string; window_end: string; current_code: string; code_expires_at: string } | null = null;
+
+  for (let attempt = 0; attempt < MAX_CODE_ATTEMPTS; attempt++) {
+    const code = generateCode();
+
+    const { data, error: insertErr } = await supabase
+      .from("sessions")
+      .insert({
+        class_id: classId,
+        teacher_id: teacherId,
+        subject_id: subjectId || null,
+        window_start: windowStart,
+        window_end: windowEnd,
+        status: "active",
+        current_code: code,
+        code_expires_at: codeExpiresAt,
+      })
+      .select("id, window_start, window_end, current_code, code_expires_at")
       .single();
 
-console.log("[session-start] query result:", JSON.stringify({
-  hasData: !!cls,
-  dataPartial: cls ? { id: cls.id, teacher_id: cls.teacher_id } : null,
-  errorCode: clsErr?.code ?? null,
-  errorMessage: clsErr?.message ?? null,
-  errorDetails: clsErr?.details ?? null,
-  errorHint: clsErr?.hint ?? null,
-}));
+    if (!insertErr && data) {
+      session = data;
+      break;
+    }
 
-if (clsErr || !cls) {
-  return new Response(
-    JSON.stringify({ status: "error", message: "Class not found" }),
-    { status: 404, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
-  );
-}
+    // 23505 = unique_violation. Only retry on a genuine code collision;
+    // any other error should fail loudly instead of looping.
+    if (insertErr && insertErr.code !== "23505") {
+      console.error("[session-start] insert error:", insertErr.message);
+      return json({ status: "error", message: "Failed to create session" }, 500);
+    }
 
-// 5. authorization block
-const isClassTeacher = cls.teacher_id === teacherId;
-if (!isClassTeacher) {
-  let assignmentQuery = supabase
-    .from("class_subject_teachers")
-    .select("id")
-    .eq("class_id", classId)
-    .eq("teacher_id", teacherId);
-  if (subjectId) assignmentQuery = assignmentQuery.eq("subject_id", subjectId);
-
-  const { data: assignments, error: assignErr } = await assignmentQuery.limit(1);
-  if (assignErr) {
-    console.error("[session-start] assignment lookup failed:", assignErr.message);
-    return new Response(
-      JSON.stringify({ status: "error", message: "Failed to verify teacher assignment" }),
-      { status: 500, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
-    );
-  }
-  if (!assignments || assignments.length === 0) {
-    return new Response(
-      JSON.stringify({ status: "error", message: "Teacher is not assigned to this class/subject" }),
-      { status: 403, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
-    );
-  }
-}
-
-// 6. DELETE old check - DONE (moved/replaced by block above)
-
-// 7. session insert
-const now = new Date();
-const windowStart = now.toISOString();
-const windowEnd = new Date(now.getTime() + SESSION_WINDOW_MS).toISOString();
-const codeExpiresAt = new Date(now.getTime() + CODE_TTL_MS).toISOString();
-
-let session: { id: string; window_start: string; window_end: string; current_code: string; code_expires_at: string } | null = null;
-
-for (let attempt = 0; attempt < MAX_CODE_ATTEMPTS; attempt++) {
-  const code = generateCode();
-
-  const { data, error: insertErr } = await supabase
-    .from("sessions")
-    .insert({
-      class_id: classId,
-      teacher_id: teacherId,
-      subject_id: subjectId ?? null,
-      window_start: windowStart,
-      window_end: windowEnd,
-      status: "active",
-      current_code: code,
-      code_expires_at: codeExpiresAt,
-    })
-    .select("id, window_start, window_end, current_code, code_expires_at")
-    .single();
-
-  if (!insertErr && data) {
-    session = data;
-    break;
+    console.log(`[session-start] code collision on attempt ${attempt + 1}, retrying`);
   }
 
-  // 23505 = unique_violation. Only retry on a genuine code collision;
-  // any other error should fail loudly instead of looping.
-  if (insertErr && insertErr.code !== "23505") {
-    console.error("[session-start] insert error:", insertErr.message);
-    return new Response(
-      JSON.stringify({ status: "error", message: "Failed to create session" }),
-      { status: 500, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
-    );
+  if (!session) {
+    return json({ status: "error", message: "Failed to create session after retries" }, 500);
   }
 
-  console.log(`[session-start] code collision on attempt ${attempt + 1}, retrying`);
-}
+  const classLabel = cls.section ? `${cls.name} ${cls.section}` : cls.name;
+  notifyEnrolledStudents(supabase, classId, session.id, classLabel);
 
-if (!session) {
-  return new Response(
-    JSON.stringify({ status: "error", message: "Failed to create session after retries" }),
-    { status: 500, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
-  );
-}
-
-// 8. notifyEnrolledStudents
-const classLabel = cls.section ? `${cls.name} ${cls.section}` : cls.name;
-notifyEnrolledStudents(supabase, classId, session.id, classLabel);
-
-return new Response(
-  JSON.stringify({
+  return json({
     sessionId: session.id,
     windowStart: session.window_start,
     windowEnd: session.window_end,
     currentCode: session.current_code,
     codeExpiresAt: session.code_expires_at,
-  }),
-  { status: 200, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
-);
+  }, 200);
 
 } catch (err) {
-  // 9. catch block
   console.error("[session-start] unhandled:", err instanceof Error ? err.stack : err);
-  return new Response(
-    JSON.stringify({ status: "error", message: "Internal server error" }),
-    { status: 500, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
-  );
+  return json({ status: "error", message: "Internal server error" }, 500);
 }
 });

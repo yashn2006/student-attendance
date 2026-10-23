@@ -1,12 +1,6 @@
 // POST /functions/v1/webauthn-register-verify
-// Verifies the WebAuthn registration credential returned by the browser
-// after navigator.credentials.create(). On success, stores ONLY the
-// public key (not biometric data) in the device_bindings table and marks
-// the student as webauthn_registered = true.
-//
-// Per the device-attendance-flow SKILL.md: the server NEVER receives or
-// stores actual biometric data - only cryptographic proof. NEVER hardcode
-// "fingerprint" or "face" anywhere.
+// Verifies the registration credential for the authenticated student and
+// stores only the device public key.
 
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -17,21 +11,16 @@ const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")
   ?? (Deno.env.get("SUPABASE_SECRET_KEYS")
     ? (JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS")!)).default
     : "");
+const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
 
 const RP_ID = Deno.env.get("WEBAUTHN_RP_ID") ?? "coreegin.com";
 const ORIGIN = (Deno.env.get("WEBAUTHN_ORIGIN") ?? "https://campus-os.coreegin.com").trim();
-
-// Native Android apps (via Credential Manager) don't send an https:// origin.
-// They send "android:apk-key-hash:<base64url of the SHA-256 signing cert hash>"
-// instead. Add one entry per signing key you use (debug/dev-client/production),
-// comma-separated, via the WEBAUTHN_ANDROID_ORIGINS secret - e.g.:
-//   WEBAUTHN_ANDROID_ORIGINS=android:apk-key-hash:AAAA...,android:apk-key-hash:BBBB...
 const ANDROID_ORIGINS = (Deno.env.get("WEBAUTHN_ANDROID_ORIGINS") ?? "")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
-
 const EXPECTED_ORIGINS = [ORIGIN, ...ANDROID_ORIGINS];
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -39,14 +28,11 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-interface RegisterVerifyRequest {
-  studentId: string;
-  credential: {
-    id: string;
-    rawId: string;
-    response: Record<string, unknown>;
-    type: "public-key";
-  };
+function json(body: unknown, status: number) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+  });
 }
 
 serve(async (req: Request): Promise<Response> => {
@@ -55,26 +41,55 @@ serve(async (req: Request): Promise<Response> => {
   }
 
   try {
-    const body: RegisterVerifyRequest = await req.json();
-    const { studentId, credential } = body;
-
-    if (!studentId || !credential) {
-      return new Response(
-        JSON.stringify({ status: "error", message: "studentId and credential are required" }),
-        { status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
-      );
-    }
-
     if (!SUPABASE_SERVICE_ROLE_KEY) {
-      return new Response(
-        JSON.stringify({ status: "error", message: "Service role key not configured" }),
-        { status: 500, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
-      );
+      return json({ status: "error", message: "Internal server error" }, 500);
     }
+
+    const authHeader = req.headers.get("Authorization");
+    if (!authHeader) return json({ status: "error", message: "Missing auth" }, 401);
+
+    const callerClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      global: { headers: { Authorization: authHeader } },
+    });
+    const { data: { user: authUser }, error: authError } = await callerClient.auth.getUser();
+    if (authError || !authUser) return json({ status: "error", message: "Invalid session" }, 401);
 
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
-    // Retrieve the pending challenge that was stored by register-options.
+    const { data: studentRow, error: studentLookupError } = await supabase
+      .from("students")
+      .select("id")
+      .eq("supabase_user", authUser.id)
+      .maybeSingle();
+
+    if (studentLookupError) {
+      console.error("[webauthn-register-verify] student lookup failed:", studentLookupError.message);
+      return json({ status: "error", message: "Failed to authorize request" }, 500);
+    }
+    if (!studentRow) return json({ status: "error", message: "Not a recognized student" }, 403);
+
+    let body: Record<string, unknown>;
+    try {
+      body = await req.json();
+    } catch {
+      return json({ status: "error", message: "Invalid JSON body" }, 400);
+    }
+
+    const bodyStudentId = typeof body.studentId === "string" ? body.studentId.trim() : "";
+    const credential = body.credential;
+
+    if (bodyStudentId && !UUID_RE.test(bodyStudentId)) {
+      return json({ status: "error", message: "studentId must be a valid UUID" }, 400);
+    }
+    if (bodyStudentId && bodyStudentId !== studentRow.id) {
+      return json({ status: "error", message: "You can only register your own device" }, 403);
+    }
+    if (!credential || typeof credential !== "object") {
+      return json({ status: "error", message: "credential is required" }, 400);
+    }
+
+    const studentId = studentRow.id;
+
     const { data: challengeRow, error: challengeErr } = await supabase
       .from("webauthn_challenges")
       .select("challenge, expires_at")
@@ -83,86 +98,70 @@ serve(async (req: Request): Promise<Response> => {
       .gte("expires_at", new Date().toISOString())
       .order("created_at", { ascending: false })
       .limit(1)
-      .single();
+      .maybeSingle();
 
-    if (challengeErr || !challengeRow) {
-      return new Response(
-        JSON.stringify({ status: "error", message: "No pending registration challenge found. The challenge may have expired or already been consumed." }),
-        { status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
+    if (challengeErr) {
+      console.error("[webauthn-register-verify] challenge lookup failed:", challengeErr.message);
+      return json({ status: "error", message: "Failed to load registration challenge" }, 500);
+    }
+    if (!challengeRow) {
+      return json(
+        { status: "error", message: "No pending registration challenge found. The challenge may have expired or already been consumed." },
+        400,
       );
     }
 
     const expectedChallenge = challengeRow.challenge;
 
-    // Verify the credential against the stored challenge.
-    // This is where SimpleWebAuthn cryptographically validates the
-    // attestation - proving the device actually holds the private key.
     let verification;
     try {
       verification = await verifyRegistrationResponse({
-        response: credential,
+        response: credential as any,
         expectedChallenge,
         expectedOrigin: EXPECTED_ORIGINS,
         expectedRPID: RP_ID,
       });
     } catch (verifyErr) {
-      console.error("[register-verify] verification failed:", verifyErr instanceof Error ? verifyErr.message : verifyErr);
-      return new Response(
-        JSON.stringify({ status: "error", message: "Registration verification failed" }),
-        { status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
+      console.error(
+        "[webauthn-register-verify] verification failed:",
+        verifyErr instanceof Error ? verifyErr.message : verifyErr,
       );
+      return json({ status: "error", message: "Registration verification failed" }, 400);
     }
 
     const { verified, registrationInfo } = verification;
-
     if (!verified || !registrationInfo) {
-      return new Response(
-        JSON.stringify({ status: "error", message: "Registration not verified" }),
-        { status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
-      );
+      return json({ status: "error", message: "Registration not verified" }, 400);
     }
 
     const { credential: regCredential } = registrationInfo;
 
-    // Convert Uint8Array public key to base64 for storage in the TEXT column.
-    // device_bindings stores only the public key — NEVER biometric data.
-    const publicKeyBase64 = btoa(
-      String.fromCharCode(...regCredential.publicKey),
-    );
+    const publicKeyBase64 = btoa(String.fromCharCode(...regCredential.publicKey));
 
-    // Check for duplicate credential ID (same authenticator already registered).
-    // Check for duplicate credential ID (same authenticator already registered).
-    const { data: existing } = await supabase
+    const { data: existing, error: existingError } = await supabase
       .from("device_bindings")
       .select("id")
       .eq("credential_id", regCredential.id)
       .maybeSingle();
 
+    if (existingError) {
+      console.error("[webauthn-register-verify] duplicate lookup failed:", existingError.message);
+      return json({ status: "error", message: "Failed to store device credential" }, 500);
+    }
     if (existing) {
-      return new Response(
-        JSON.stringify({ status: "error", message: "This authenticator is already registered" }),
-        { status: 409, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
-      );
+      return json({ status: "error", message: "This authenticator is already registered" }, 409);
     }
 
-    // Single-device-per-student model: registering a new device replaces
-    // any previous binding(s) for this student, so old/stale credentials
-    // (e.g. from before an RP_ID or origin fix) never linger and confuse
-    // the auth-options allowCredentials list.
     const { error: cleanupErr } = await supabase
       .from("device_bindings")
       .delete()
       .eq("student_id", studentId);
 
     if (cleanupErr) {
-      console.error("[register-verify] old binding cleanup error:", cleanupErr.message);
-      return new Response(
-        JSON.stringify({ status: "error", message: "Failed to clear previous device binding" }),
-        { status: 500, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
-      );
+      console.error("[webauthn-register-verify] old binding cleanup failed:", cleanupErr.message);
+      return json({ status: "error", message: "Failed to clear previous device binding" }, 500);
     }
 
-    // Insert the device. Only stores public key — never biometric data.
     const { error: bindingErr } = await supabase
       .from("device_bindings")
       .insert({
@@ -173,60 +172,40 @@ serve(async (req: Request): Promise<Response> => {
       });
 
     if (bindingErr) {
-      console.error("[register-verify] binding insert error:", bindingErr.message);
-      return new Response(
-        JSON.stringify({ status: "error", message: "Failed to store device credential" }),
-        { status: 500, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
-      );
+      console.error("[webauthn-register-verify] binding insert failed:", bindingErr.message);
+      return json({ status: "error", message: "Failed to store device credential" }, 500);
     }
 
-    // Mark the student as registered.
-    // Mark the student as registered.
-    const { data: flagUpdateData, error: flagUpdateErr } = await supabase
+    const { error: flagUpdateErr } = await supabase
       .from("students")
       .update({ webauthn_registered: true })
-      .eq("id", studentId)
-      .select("id, webauthn_registered");
-
-    console.log("[register-verify] flag update result:", { flagUpdateData, flagUpdateErr: flagUpdateErr?.message });
+      .eq("id", studentId);
 
     if (flagUpdateErr) {
-      console.error("[register-verify] FAILED to set webauthn_registered:", flagUpdateErr.message);
+      console.error("[webauthn-register-verify] flag update failed:", flagUpdateErr.message);
     }
 
-    // Delete the used challenge so it can't be replayed.
-    await supabase
+    const { error: challengeDeleteErr } = await supabase
       .from("webauthn_challenges")
       .delete()
       .eq("student_id", studentId)
       .eq("challenge", expectedChallenge);
+    if (challengeDeleteErr) {
+      console.error("[webauthn-register-verify] challenge delete failed:", challengeDeleteErr.message);
+    }
 
-    // Clean up any other expired challenges for this student.
-    await supabase
+    const { error: expiredDeleteErr } = await supabase
       .from("webauthn_challenges")
       .delete()
       .eq("student_id", studentId)
       .lt("expires_at", new Date().toISOString());
+    if (expiredDeleteErr) {
+      console.error("[webauthn-register-verify] expired challenge cleanup failed:", expiredDeleteErr.message);
+    }
 
-    return new Response(
-      JSON.stringify({ status: "registered" }),
-      { status: 200, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
-    );
+    return json({ status: "registered" }, 200);
   } catch (err) {
-  console.error("REGISTER OPTIONS ERROR:", err);
-
-  return new Response(
-    JSON.stringify({
-      status: "error",
-      message: err instanceof Error ? err.message : String(err),
-    }),
-    {
-      status: 500,
-      headers: {
-        ...CORS_HEADERS,
-        "Content-Type": "application/json",
-      },
-    },
-  );
-}
+    console.error("[webauthn-register-verify] unexpected:", err instanceof Error ? err.message : err);
+    return json({ status: "error", message: "Internal server error" }, 500);
+  }
 });

@@ -23,6 +23,10 @@ const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")
   ?? (Deno.env.get("SUPABASE_SECRET_KEYS")
     ? (JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS")!)).default
     : "");
+const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const CODE_RE = /^\d{6}$/;
 
 const RP_ID = Deno.env.get("WEBAUTHN_RP_ID") ?? "coreegin.com";
 const ORIGIN = (Deno.env.get("WEBAUTHN_ORIGIN") ?? "https://campus-os.coreegin.com").trim();
@@ -79,10 +83,71 @@ serve(async (req: Request): Promise<Response> => {
   }
 
   try {
-    const body: AttendanceMarkRequest = await req.json();
-    const { sessionId, studentId, codeEntered, webauthnAssertion, deviceFingerprint } = body;
+    if (!SUPABASE_SERVICE_ROLE_KEY) {
+      return new Response(
+        JSON.stringify({ status: "rejected", reason: "Internal server error" }),
+        { status: 500, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
+      );
+    }
 
-    if (!sessionId || !studentId || !codeEntered || !webauthnAssertion) {
+    const authHeader = req.headers.get("Authorization");
+    if (!authHeader) {
+      return new Response(
+        JSON.stringify({ status: "rejected", reason: "unauthorized" }),
+        { status: 401, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
+      );
+    }
+
+    const callerClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      global: { headers: { Authorization: authHeader } },
+    });
+    const { data: { user: authUser }, error: authError } = await callerClient.auth.getUser();
+    if (authError || !authUser) {
+      return new Response(
+        JSON.stringify({ status: "rejected", reason: "unauthorized" }),
+        { status: 401, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
+      );
+    }
+
+    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+
+    const { data: studentRow, error: studentLookupError } = await supabase
+      .from("students")
+      .select("id")
+      .eq("supabase_user", authUser.id)
+      .maybeSingle();
+
+    if (studentLookupError) {
+      console.error("[attendance-mark] student lookup failed:", studentLookupError.message);
+      return new Response(
+        JSON.stringify({ status: "rejected", reason: "Internal server error" }),
+        { status: 500, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
+      );
+    }
+    if (!studentRow) {
+      return new Response(
+        JSON.stringify({ status: "rejected", reason: "forbidden" }),
+        { status: 403, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
+      );
+    }
+
+    let body: AttendanceMarkRequest;
+    try {
+      body = await req.json();
+    } catch {
+      return new Response(
+        JSON.stringify({ status: "rejected", reason: "Invalid JSON body" }),
+        { status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
+      );
+    }
+
+    const { sessionId, studentId: bodyStudentId, codeEntered, webauthnAssertion } = body;
+    const deviceFingerprint = typeof body.deviceFingerprint === "string"
+      ? body.deviceFingerprint.trim()
+      : "";
+    const studentId = studentRow.id;
+
+    if (!sessionId || !bodyStudentId || !codeEntered || !webauthnAssertion) {
       return new Response(
         JSON.stringify({
           status: "rejected",
@@ -91,31 +156,51 @@ serve(async (req: Request): Promise<Response> => {
         { status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
       );
     }
-    if (!deviceFingerprint) {
+    if (
+      typeof webauthnAssertion !== "object" ||
+      typeof webauthnAssertion.id !== "string" ||
+      webauthnAssertion.id.length < 1 ||
+      webauthnAssertion.id.length > 1024 ||
+      typeof webauthnAssertion.response !== "object" ||
+      webauthnAssertion.response === null ||
+      webauthnAssertion.type !== "public-key"
+    ) {
+      return new Response(
+        JSON.stringify({ status: "rejected", reason: "Invalid request: malformed webauthnAssertion" }),
+        { status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
+      );
+    }
+    if (bodyStudentId !== studentId) {
+      return new Response(
+        JSON.stringify({ status: "rejected", reason: "forbidden" }),
+        { status: 403, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
+      );
+    }
+    if (typeof sessionId !== "string" || !UUID_RE.test(sessionId)) {
+      return new Response(
+        JSON.stringify({ status: "rejected", reason: "Invalid request: sessionId must be a UUID" }),
+        { status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
+      );
+    }
+    if (typeof codeEntered !== "string" || !CODE_RE.test(codeEntered)) {
+      return new Response(
+        JSON.stringify({ status: "rejected", reason: "Invalid request: codeEntered must be 6 digits" }),
+        { status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
+      );
+    }
+    if (deviceFingerprint.length < 1 || deviceFingerprint.length > 512) {
       return new Response(
         JSON.stringify({ status: "rejected", reason: "Invalid request: deviceFingerprint is required" }),
         { status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
       );
     }
 
-    if (!SUPABASE_SERVICE_ROLE_KEY) {
-      return new Response(
-        JSON.stringify({
-          status: "rejected",
-          reason: "Service role key not configured",
-        }),
-        { status: 500, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
-      );
-    }
-
-    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-
     // ------------------------------------------------------------------
     // 1. Fetch the session
     // ------------------------------------------------------------------
     const { data: session, error: sessionErr } = await supabase
       .from("sessions")
-      .select("id, current_code, code_expires_at, window_end, status")
+      .select("id, class_id, current_code, code_expires_at, window_end, status")
       .eq("id", sessionId)
       .single();
 
@@ -125,6 +210,28 @@ serve(async (req: Request): Promise<Response> => {
         { status: 200, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
       );
     }
+
+    const { data: enrollment, error: enrollErr } = await supabase
+      .from("class_enrollments")
+      .select("class_id")
+      .eq("class_id", session.class_id)
+      .eq("student_id", studentId)
+      .maybeSingle();
+
+    if (enrollErr) {
+      console.error("[attendance-mark] enrollment lookup failed:", enrollErr.message);
+      return new Response(
+        JSON.stringify({ status: "rejected", reason: "Internal server error" }),
+        { status: 500, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
+      );
+    }
+    if (!enrollment) {
+      return new Response(
+        JSON.stringify({ status: "rejected", reason: "forbidden" }),
+        { status: 403, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
+      );
+    }
+
 
     // 2. Session closed / window-end server-side enforcement.
     const nowMs = Date.now();

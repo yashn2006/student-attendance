@@ -1,15 +1,5 @@
 // POST /functions/v1/webauthn-auth-options
-// Generates WebAuthn PublicKeyCredentialRequestOptions for a student to
-// authenticate their already-registered device before marking attendance.
-// The challenge is stored server-side in webauthn_challenges so the
-// attendance-mark endpoint can verify the client is returning a challenge
-// that was actually generated here — not a client-crafted fake challenge.
-// This closes the gap where attendance-mark was deriving expectedChallenge
-// from the client's own clientDataJSON, making the challenge check a no-op.
-//
-// Per the device-attendance-flow SKILL.md: the server never sees or stores
-// actual biometric data. NEVER hardcode "fingerprint" or "face" in code,
-// copy, or UI — WebAuthn lets the device pick the method.
+// Generates authentication options for the authenticated student's device.
 
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -20,9 +10,11 @@ const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")
   ?? (Deno.env.get("SUPABASE_SECRET_KEYS")
     ? (JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS")!)).default
     : "");
+const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
 
 const RP_ID = Deno.env.get("WEBAUTHN_RP_ID") ?? "coreegin.com";
 const CHALLENGE_TTL_MS = 5 * 60 * 1000;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -30,8 +22,11 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-interface AuthOptionsRequest {
-  studentId: string;
+function json(body: unknown, status: number) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
+  });
 }
 
 serve(async (req: Request): Promise<Response> => {
@@ -40,60 +35,66 @@ serve(async (req: Request): Promise<Response> => {
   }
 
   try {
-    const body: AuthOptionsRequest = await req.json();
-    const { studentId } = body;
-
-    if (!studentId) {
-      return new Response(
-        JSON.stringify({ status: "error", message: "studentId is required" }),
-        { status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
-      );
-    }
-
     if (!SUPABASE_SERVICE_ROLE_KEY) {
-      return new Response(
-        JSON.stringify({ status: "error", message: "Service role key not configured" }),
-        { status: 500, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
-      );
+      return json({ status: "error", message: "Internal server error" }, 500);
     }
+
+    const authHeader = req.headers.get("Authorization");
+    if (!authHeader) return json({ status: "error", message: "Missing auth" }, 401);
+
+    const callerClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      global: { headers: { Authorization: authHeader } },
+    });
+    const { data: { user: authUser }, error: authError } = await callerClient.auth.getUser();
+    if (authError || !authUser) return json({ status: "error", message: "Invalid session" }, 401);
 
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
-    const { data: student, error: studentErr } = await supabase
+    const { data: studentRow, error: studentLookupError } = await supabase
       .from("students")
       .select("id")
-      .eq("id", studentId)
-      .single();
+      .eq("supabase_user", authUser.id)
+      .maybeSingle();
 
-    if (studentErr || !student) {
-      return new Response(
-        JSON.stringify({ status: "error", message: "Student not found" }),
-        { status: 404, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
-      );
+    if (studentLookupError) {
+      console.error("[webauthn-auth-options] student lookup failed:", studentLookupError.message);
+      return json({ status: "error", message: "Failed to authorize request" }, 500);
+    }
+    if (!studentRow) return json({ status: "error", message: "Not a recognized student" }, 403);
+
+    let body: Record<string, unknown>;
+    try {
+      body = await req.json();
+    } catch {
+      return json({ status: "error", message: "Invalid JSON body" }, 400);
     }
 
-    // Fetch the student's registered credentials so we can build
-    // allowCredentials — the browser needs to know WHICH credential to
-    // prompt for during the authentication ceremony.
-    // Fetch the student's registered credentials so we can build
-// allowCredentials — the browser needs to know WHICH credential to
-// prompt for during the authentication ceremony.
-const { data: credentials } = await supabase
-  .from("device_bindings")
-  .select("credential_id")
-  .eq("student_id", studentId)
-  .order("created_at", { ascending: false })
-  .limit(1);
+    const bodyStudentId = typeof body.studentId === "string" ? body.studentId.trim() : "";
+    if (bodyStudentId && !UUID_RE.test(bodyStudentId)) {
+      return json({ status: "error", message: "studentId must be a valid UUID" }, 400);
+    }
+    if (bodyStudentId && bodyStudentId !== studentRow.id) {
+      return json({ status: "error", message: "You can only authenticate your own device" }, 403);
+    }
 
-    const allowCredentials = (credentials ?? []).map((c) => ({
-      id: c.credential_id,
-    }));
+    const studentId = studentRow.id;
+
+    const { data: credentials, error: credentialErr } = await supabase
+      .from("device_bindings")
+      .select("credential_id")
+      .eq("student_id", studentId)
+      .order("created_at", { ascending: false })
+      .limit(1);
+
+    if (credentialErr) {
+      console.error("[webauthn-auth-options] credential lookup failed:", credentialErr.message);
+      return json({ status: "error", message: "Failed to load device credentials" }, 500);
+    }
+
+    const allowCredentials = (credentials ?? []).map((c) => ({ id: c.credential_id }));
 
     if (allowCredentials.length === 0) {
-      return new Response(
-        JSON.stringify({ status: "error", message: "No registered device found for this student" }),
-        { status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
-      );
+      return json({ status: "error", message: "No registered device found for this student" }, 400);
     }
 
     const options = await generateAuthenticationOptions({
@@ -102,8 +103,6 @@ const { data: credentials } = await supabase
       userVerification: "required",
     });
 
-    // Persist the challenge so a real verify endpoint can confirm the
-    // client is returning what was generated server-side.
     const expiresAt = new Date(Date.now() + CHALLENGE_TTL_MS).toISOString();
     const { error: insertErr } = await supabase
       .from("webauthn_challenges")
@@ -115,38 +114,19 @@ const { data: credentials } = await supabase
       });
 
     if (insertErr) {
-      console.error("[auth-options] challenge insert error:", insertErr.message);
-      return new Response(
-        JSON.stringify({ status: "error", message: "Failed to persist challenge" }),
-        { status: 500, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
-      );
+      console.error("[webauthn-auth-options] challenge insert failed:", insertErr.message);
+      return json({ status: "error", message: "Failed to persist challenge" }, 500);
     }
 
-    return new Response(
-      JSON.stringify({
-        challenge: options.challenge,
-        rpId: RP_ID,
-        allowCredentials: options.allowCredentials,
-        userVerification: options.userVerification,
-        timeout: options.timeout,
-      }),
-      { status: 200, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
-    );
+    return json({
+      challenge: options.challenge,
+      rpId: RP_ID,
+      allowCredentials: options.allowCredentials,
+      userVerification: options.userVerification,
+      timeout: options.timeout,
+    }, 200);
   } catch (err) {
-  console.error("REGISTER OPTIONS ERROR:", err);
-
-  return new Response(
-    JSON.stringify({
-      status: "error",
-      message: err instanceof Error ? err.message : String(err),
-    }),
-    {
-      status: 500,
-      headers: {
-        ...CORS_HEADERS,
-        "Content-Type": "application/json",
-      },
-    },
-  );
-}
+    console.error("[webauthn-auth-options] unexpected:", err instanceof Error ? err.message : err);
+    return json({ status: "error", message: "Internal server error" }, 500);
+  }
 });

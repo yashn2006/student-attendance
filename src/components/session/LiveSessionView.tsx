@@ -6,7 +6,7 @@ import {
   Play,
   Square,
   UserCheck,
-  ShieldCheck,
+  Users,
   Zap,
   Radio,
   AlertCircle,
@@ -16,9 +16,56 @@ import { useSession } from '../../context/SessionContext';
 import { useAuth } from '../../context/AuthContext';
 import { supabase } from '../../lib/supabase';
 import { SkeletonDashboardView } from '../common/Skeleton';
-import ComingSoon from '../common/ComingSoon';
 
 let classListCache: { teacherId: string; classes: any[] } | null = null;
+
+interface RosterStudent {
+  id: string;
+  name: string | null;
+  enrollment_no: string | null;
+}
+
+interface OverrideRow {
+  id: string;
+  student_id: string;
+  created_at: string;
+  reason?: string | null;
+  reason_note?: string | null;
+  teacher_id?: string | null;
+}
+
+const OVERRIDE_REASONS = [
+  { value: 'late', label: 'Late' },
+  { value: 'device_issue', label: 'Device issue' },
+  { value: 'no_passkey', label: 'No passkey' },
+  { value: 'other', label: 'Other' },
+];
+
+async function functionErrorMessage(error: unknown): Promise<string> {
+  const err = error as { message?: string; context?: unknown } | null;
+  const context = err?.context as
+    | { json?: () => Promise<unknown>; text?: () => Promise<string> }
+    | undefined;
+
+  if (context) {
+    try {
+      if (typeof context.json === 'function') {
+        const body = (await context.json()) as {
+          message?: string;
+          error?: string;
+          reason?: string;
+        } | null;
+        if (body?.message || body?.error || body?.reason) {
+          return body.message || body.error || body.reason || 'Failed to mark attendance';
+        }
+      }
+    } catch {
+      // fall through to the generic message
+    }
+  }
+
+  return err?.message || 'Failed to mark attendance';
+}
 
 export const LiveSessionView: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
@@ -109,6 +156,20 @@ export const LiveSessionView: React.FC = () => {
   const [isStarting, setIsStarting] = useState(false);
   const [now, setNow] = useState(Date.now());
 
+  // Manual roll call
+  const [roster, setRoster] = useState<RosterStudent[]>([]);
+  const [rosterLoading, setRosterLoading] = useState(false);
+  const [rosterError, setRosterError] = useState<string | null>(null);
+  const [overrideRows, setOverrideRows] = useState<OverrideRow[]>([]);
+  const [feedStudents, setFeedStudents] = useState<Record<string, RosterStudent>>({});
+  const [selectedStudentIds, setSelectedStudentIds] = useState<string[]>([]);
+  const [overrideReason, setOverrideReason] = useState('');
+  const [overrideNote, setOverrideNote] = useState('');
+  const [isMarking, setIsMarking] = useState(false);
+  const [overrideError, setOverrideError] = useState<string | null>(null);
+  const [overrideSuccess, setOverrideSuccess] = useState<string | null>(null);
+  const [rosterRefreshKey, setRosterRefreshKey] = useState(0);
+
   // Local 1s ticking clock, purely for countdown display —
   // the real code/expiry values still come from server polling in SessionContext.
   useEffect(() => {
@@ -160,6 +221,253 @@ export const LiveSessionView: React.FC = () => {
     await endSession(teacherId);
   };
 
+  const verifiedStudentIds = useMemo(() => {
+    const set = new Set<string>();
+    for (const record of attendanceRecords) {
+      const status = String((record as { status?: unknown }).status ?? '');
+      if (status === 'verified' || status === 'present') set.add(record.student_id);
+    }
+    return set;
+  }, [attendanceRecords]);
+
+  useEffect(() => {
+    if (!sessionActive || !activeSession?.sessionId || !activeSession.classId) {
+      setRoster([]);
+      setOverrideRows([]);
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadRoster = async () => {
+      setRosterLoading(true);
+      setRosterError(null);
+
+      const enrollmentResult = await supabase
+        .from('class_enrollments')
+        .select('student_id, students(id, name, enrollment_no)')
+        .eq('class_id', activeSession.classId);
+
+      if (cancelled) return;
+
+      if (enrollmentResult.error) {
+        setRosterError(enrollmentResult.error.message);
+        setRoster([]);
+      } else {
+        const rows: RosterStudent[] = [];
+        for (const row of (enrollmentResult.data ?? []) as any[]) {
+          const student = Array.isArray(row.students) ? row.students[0] : row.students;
+          if (!student?.id) continue;
+          rows.push({
+            id: student.id,
+            name: student.name ?? null,
+            enrollment_no: student.enrollment_no ?? null,
+          });
+        }
+        rows.sort(
+          (a, b) =>
+            (a.enrollment_no ?? '').localeCompare(b.enrollment_no ?? '', undefined, {
+              numeric: true,
+            }) || (a.name ?? '').localeCompare(b.name ?? '')
+        );
+        setRoster(rows);
+      }
+
+      setRosterLoading(false);
+    };
+
+    loadRoster();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionActive, activeSession?.sessionId, activeSession?.classId, rosterRefreshKey]);
+
+  useEffect(() => {
+    if (!sessionActive || !activeSession?.sessionId) {
+      setOverrideRows([]);
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadOverrides = async () => {
+      const { data, error } = await supabase
+        .from('attendance_overrides')
+        .select('id, student_id, created_at, reason, reason_note, teacher_id')
+        .eq('session_id', activeSession.sessionId)
+        .order('created_at', { ascending: true });
+
+      if (cancelled) return;
+
+      if (error) {
+        console.error('[LiveSessionView] override lookup failed:', error);
+        setRosterError((current) => current ?? error.message);
+        return;
+      }
+
+      setOverrideRows((data ?? []) as OverrideRow[]);
+    };
+
+    loadOverrides();
+    const interval = setInterval(loadOverrides, 5000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [sessionActive, activeSession?.sessionId, rosterRefreshKey]);
+
+  useEffect(() => {
+    const ids = new Set<string>();
+    for (const record of attendanceRecords) ids.add(record.student_id);
+    for (const override of overrideRows) ids.add(override.student_id);
+    if (ids.size === 0) {
+      setFeedStudents({});
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadStudents = async () => {
+      const { data, error } = await supabase
+        .from('students')
+        .select('id, name, enrollment_no')
+        .in('id', Array.from(ids));
+
+      if (cancelled) return;
+      if (error) {
+        console.error('[LiveSessionView] student lookup failed:', error);
+        return;
+      }
+
+      const map: Record<string, RosterStudent> = {};
+      for (const student of (data ?? []) as RosterStudent[]) {
+        map[student.id] = student;
+      }
+      setFeedStudents(map);
+    };
+
+    loadStudents();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [attendanceRecords, overrideRows]);
+
+  const overriddenStudentIds = useMemo(
+    () => new Set(overrideRows.map((row) => row.student_id)),
+    [overrideRows]
+  );
+
+  const studentById = useMemo(() => {
+    const map = new Map<string, RosterStudent>();
+    for (const student of roster) map.set(student.id, student);
+    for (const student of Object.values(feedStudents) as RosterStudent[]) {
+      map.set(student.id, student);
+    }
+    return map;
+  }, [roster, feedStudents]);
+
+  const feedEntries = useMemo(() => {
+    const entries = [
+      ...attendanceRecords.map((record) => ({
+        key: `record:${record.id}`,
+        studentId: record.student_id,
+        createdAt: record.created_at,
+        manual: false,
+      })),
+      ...overrideRows.map((row) => ({
+        key: `override:${row.id}`,
+        studentId: row.student_id,
+        createdAt: row.created_at,
+        manual: true,
+      })),
+    ];
+
+    return entries.sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+  }, [attendanceRecords, overrideRows]);
+
+  const presentStudentIds = useMemo(() => {
+    const set = new Set<string>(verifiedStudentIds);
+    for (const row of overrideRows) set.add(row.student_id);
+    return set;
+  }, [verifiedStudentIds, overrideRows]);
+
+  useEffect(() => {
+    setSelectedStudentIds([]);
+    setOverrideReason('');
+    setOverrideNote('');
+    setOverrideError(null);
+    setOverrideSuccess(null);
+  }, [activeTab, activeSession?.sessionId]);
+
+  const toggleStudent = (id: string) => {
+    setSelectedStudentIds((current) =>
+      current.includes(id) ? current.filter((value) => value !== id) : [...current, id]
+    );
+    setOverrideError(null);
+    setOverrideSuccess(null);
+  };
+
+  const noteInvalid = overrideReason === 'other' && overrideNote.trim().length < 3;
+
+  const handleMarkPresent = async () => {
+    if (!activeSession) return;
+    if (selectedStudentIds.length === 0) {
+      setOverrideError('Select at least one student.');
+      return;
+    }
+    if (!overrideReason) {
+      setOverrideError('A reason is required.');
+      return;
+    }
+    if (noteInvalid) {
+      setOverrideError('A note of at least 3 characters is required when the reason is Other.');
+      return;
+    }
+
+    setIsMarking(true);
+    setOverrideError(null);
+    setOverrideSuccess(null);
+
+    try {
+      const { data, error } = await supabase.functions.invoke('attendance-override', {
+        body: {
+          sessionId: activeSession.sessionId,
+          studentIds: selectedStudentIds,
+          reason: overrideReason,
+          note: overrideNote.trim(),
+        },
+      });
+
+      if (error) {
+        setOverrideError(await functionErrorMessage(error));
+        return;
+      }
+
+      if (data?.status === 'error') {
+        setOverrideError(data.message || 'Failed to mark attendance');
+        return;
+      }
+
+      const added = Number(data?.added ?? data?.addedCount ?? data?.counts?.added ?? 0);
+      const skipped = Number(data?.skipped ?? data?.skippedCount ?? data?.counts?.skipped ?? 0);
+
+      setOverrideSuccess(`Manual marks saved: ${added} added, ${skipped} skipped.`);
+      setSelectedStudentIds([]);
+      setOverrideReason('');
+      setOverrideNote('');
+      setRosterRefreshKey((key) => key + 1);
+    } catch (err) {
+      setOverrideError(err instanceof Error ? err.message : 'Failed to mark attendance');
+    } finally {
+      setIsMarking(false);
+    }
+  };
+
   const codeSecondsLeft = activeSession
     ? Math.max(0, Math.round((new Date(activeSession.codeExpiresAt).getTime() - now) / 1000))
     : 0;
@@ -169,7 +477,7 @@ export const LiveSessionView: React.FC = () => {
     : 0;
 
   const totalClassStudents = selectedClass?.studentCount ?? 0;
-  const markedCount = attendanceRecords.length;
+  const markedCount = presentStudentIds.size;
   const progressPercent = totalClassStudents > 0 ? Math.round((markedCount / totalClassStudents) * 100) : 0;
 
   if (loading || isLoading) {
@@ -315,7 +623,7 @@ export const LiveSessionView: React.FC = () => {
                 activeTab === 'manual_rollcall' ? 'bg-[#14201B] text-white shadow-xs' : 'text-[#5C6B63] hover:text-[#14201B]'
               }`}
             >
-              <UserCheck className="w-3.5 h-3.5 inline mr-1.5 text-[#4E7FD6]" /> Manual Roll Call (local only)
+              <UserCheck className="w-3.5 h-3.5 inline mr-1.5 text-[#4E7FD6]" /> Manual Roll Call
             </button>
           </div>
         )}
@@ -399,21 +707,36 @@ export const LiveSessionView: React.FC = () => {
               </div>
 
               <div className="mt-3 space-y-2.5 overflow-y-auto flex-1 pr-1">
-                {attendanceRecords.length > 0 ? (
-                  attendanceRecords.map((rec) => (
-                    <div
-                      key={rec.id}
-                      className="p-3 rounded-xl bg-white border border-[#DCEAE3] shadow-xs flex items-center justify-between gap-3"
-                    >
-                      <div>
-                        <h5 className="text-xs font-bold text-[#14201B]">{String(rec.student_id)}</h5>
-                        <p className="text-[10px] text-[#5C6B63] font-mono">
-                          {new Date(rec.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                        </p>
+                {feedEntries.length > 0 ? (
+                  feedEntries.map((entry) => {
+                    const student = studentById.get(entry.studentId);
+                    return (
+                      <div
+                        key={entry.key}
+                        className="p-3 rounded-xl bg-white border border-[#DCEAE3] shadow-xs flex items-center justify-between gap-3"
+                      >
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <h5 className="text-xs font-bold text-[#14201B] truncate">
+                              {student?.name?.trim() || 'Unknown student'}
+                            </h5>
+                            {entry.manual && (
+                              <span className="shrink-0 px-1.5 py-0.5 rounded bg-[#4E7FD6]/15 text-[#4E7FD6] text-[8px] font-black uppercase">
+                                manual
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-[10px] text-[#5C6B63] font-mono">
+                            {student?.enrollment_no?.trim() || '—'}
+                          </p>
+                          <p className="text-[10px] text-[#5C6B63] font-mono">
+                            {new Date(entry.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                          </p>
+                        </div>
+                        <CheckCircle2 className="w-4 h-4 text-[#12A176] shrink-0" />
                       </div>
-                      <CheckCircle2 className="w-4 h-4 text-[#12A176] shrink-0" />
-                    </div>
-                  ))
+                    );
+                  })
                 ) : (
                   <div className="py-10 flex flex-col items-center justify-center text-center p-6 border-2 border-dashed border-[#DCEAE3] rounded-xl bg-white/70">
                     <div className="w-10 h-10 rounded-full bg-[#E5F5EE] flex items-center justify-center text-[#12A176] mb-2.5">
@@ -426,20 +749,159 @@ export const LiveSessionView: React.FC = () => {
                   </div>
                 )}
               </div>
-
-              <div className="pt-3 mt-3 border-t border-[#DCEAE3]">
-                <div className="text-center text-[10px] text-[#5C6B63] flex items-center justify-center gap-1.5 font-semibold">
-                  <ShieldCheck className="w-3.5 h-3.5 text-[#12A176]" />
-                  <span>Showing raw student_id — full profile join is a later step</span>
-                </div>
-              </div>
             </div>
           </div>
         ) : (
-          <ComingSoon
-     feature="Manual Roll Call"
-     note="Needs the student roster wired up first — that's next after the QR/code flow ships."
-         />
+          <div className="space-y-5">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-[10px] font-black uppercase text-[#5C6B63] mb-1.5 ml-1">
+                  Reason <span className="text-[#DB5B4E]">*</span>
+                </label>
+                <select
+                  value={overrideReason}
+                  onChange={(event) => {
+                    setOverrideReason(event.target.value);
+                    setOverrideError(null);
+                    setOverrideSuccess(null);
+                  }}
+                  className="w-full px-4 py-3 rounded-xl bg-[#F8FDFB] border border-[#DCEAE3] text-sm font-bold text-[#14201B] focus:outline-none focus:border-[#12A176]"
+                >
+                  <option value="">Select a reason</option>
+                  {OVERRIDE_REASONS.map((reason) => (
+                    <option key={reason.value} value={reason.value}>
+                      {reason.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-black uppercase text-[#5C6B63] mb-1.5 ml-1">
+                  Note {overrideReason === 'other' && <span className="text-[#DB5B4E]">*</span>}
+                </label>
+                <input
+                  type="text"
+                  value={overrideNote}
+                  onChange={(event) => {
+                    setOverrideNote(event.target.value);
+                    setOverrideError(null);
+                    setOverrideSuccess(null);
+                  }}
+                  placeholder={overrideReason === 'other' ? 'Required — at least 3 characters' : 'Optional note'}
+                  className="w-full px-4 py-3 rounded-xl bg-[#F8FDFB] border border-[#DCEAE3] text-sm font-semibold text-[#14201B] focus:outline-none focus:border-[#12A176]"
+                />
+                {noteInvalid && (
+                  <p className="text-[11px] text-[#DB5B4E] font-bold mt-1 ml-1">
+                    A note of at least 3 characters is required when the reason is Other.
+                  </p>
+                )}
+              </div>
+            </div>
+
+            {rosterError && (
+              <div className="p-3 rounded-xl bg-[#DB5B4E]/10 border border-[#DB5B4E]/30 text-xs font-bold text-[#DB5B4E] flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span className="break-words">{rosterError}</span>
+              </div>
+            )}
+
+            {overrideError && (
+              <div className="p-3 rounded-xl bg-[#DB5B4E]/10 border border-[#DB5B4E]/30 text-xs font-bold text-[#DB5B4E] flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span className="break-words">{overrideError}</span>
+              </div>
+            )}
+
+            {overrideSuccess && (
+              <div className="p-3 rounded-xl bg-[#E5F5EE] border border-[#12A176]/30 text-xs font-bold text-[#12A176] flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4" />
+                <span>{overrideSuccess}</span>
+              </div>
+            )}
+
+            <div className="rounded-2xl border border-[#DCEAE3] overflow-hidden">
+              <div className="flex items-center justify-between px-4 py-3 bg-[#F8FDFB] border-b border-[#DCEAE3]">
+                <div className="flex items-center gap-2">
+                  <Users className="w-4 h-4 text-[#12A176]" />
+                  <h4 className="text-sm font-bold text-[#14201B]">Class roster</h4>
+                </div>
+                <span className="text-[10px] font-bold text-[#5C6B63]">
+                  {selectedStudentIds.length} selected · {roster.length} students
+                </span>
+              </div>
+
+              {rosterLoading ? (
+                <div className="p-8 text-center text-xs text-[#5C6B63] font-semibold flex items-center justify-center gap-2">
+                  <Loader2 className="w-4 h-4 animate-spin text-[#12A176]" /> Loading roster…
+                </div>
+              ) : roster.length === 0 ? (
+                <div className="p-8 text-center text-xs text-[#5C6B63] font-semibold">
+                  No students are enrolled in this class.
+                </div>
+              ) : (
+                <div className="max-h-[420px] overflow-y-auto divide-y divide-[#DCEAE3]">
+                  {roster.map((student) => {
+                    const alreadyPresent =
+                      verifiedStudentIds.has(student.id) || overriddenStudentIds.has(student.id);
+
+                    return (
+                      <label
+                        key={student.id}
+                        className={`flex items-center justify-between gap-3 px-4 py-3 ${
+                          alreadyPresent ? 'bg-[#E5F5EE]/40' : 'bg-white hover:bg-[#F8FDFB]'
+                        } ${alreadyPresent ? 'cursor-default' : 'cursor-pointer'}`}
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <input
+                            type="checkbox"
+                            checked={alreadyPresent || selectedStudentIds.includes(student.id)}
+                            disabled={alreadyPresent}
+                            onChange={() => toggleStudent(student.id)}
+                            className="w-4 h-4 rounded border-[#DCEAE3] text-[#12A176] focus:ring-[#12A176] disabled:opacity-60"
+                          />
+                          <div className="min-w-0">
+                            <span className="block text-sm font-bold text-[#14201B] truncate">
+                              {student.name?.trim() || 'Unknown student'}
+                            </span>
+                            <span className="block text-[11px] text-[#5C6B63] font-mono">
+                              {student.enrollment_no?.trim() || '—'}
+                            </span>
+                          </div>
+                        </div>
+
+                        {alreadyPresent && (
+                          <span className="shrink-0 text-[10px] font-black uppercase px-2.5 py-1 rounded-full bg-[#E5F5EE] text-[#12A176] border border-[#12A176]/30">
+                            Already present
+                          </span>
+                        )}
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end">
+              <button
+                onClick={handleMarkPresent}
+                disabled={
+                  isMarking ||
+                  selectedStudentIds.length === 0 ||
+                  !overrideReason ||
+                  noteInvalid
+                }
+                className="px-6 py-3 rounded-xl bg-[#12A176] hover:bg-[#0E8360] text-white font-bold text-xs shadow-sm flex items-center gap-2 transition-all cursor-pointer disabled:opacity-60"
+              >
+                {isMarking ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <UserCheck className="w-4 h-4" />
+                )}
+                <span>{isMarking ? 'Marking…' : 'Mark present'}</span>
+              </button>
+            </div>
+          </div>
         )}
       </div>
     </div>
