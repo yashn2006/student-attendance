@@ -34,6 +34,18 @@ interface OverrideRow {
   teacher_id?: string | null;
 }
 
+interface FeedRecordRow {
+  id: string;
+  session_id?: string;
+  student_id: string;
+  code_entered?: string | null;
+  status?: string | null;
+  reject_reason?: string | null;
+  webauthn_verified?: boolean | null;
+  device_fingerprint?: string | null;
+  created_at: string;
+}
+
 const OVERRIDE_REASONS = [
   { value: 'late', label: 'Late' },
   { value: 'device_issue', label: 'Device issue' },
@@ -161,6 +173,8 @@ export const LiveSessionView: React.FC = () => {
   const [rosterLoading, setRosterLoading] = useState(false);
   const [rosterError, setRosterError] = useState<string | null>(null);
   const [overrideRows, setOverrideRows] = useState<OverrideRow[]>([]);
+  const [feedRecords, setFeedRecords] = useState<FeedRecordRow[]>([]);
+  const [feedError, setFeedError] = useState<string | null>(null);
   const [feedStudents, setFeedStudents] = useState<Record<string, RosterStudent>>({});
   const [selectedStudentIds, setSelectedStudentIds] = useState<string[]>([]);
   const [overrideReason, setOverrideReason] = useState('');
@@ -234,6 +248,8 @@ export const LiveSessionView: React.FC = () => {
     if (!sessionActive || !activeSession?.sessionId || !activeSession.classId) {
       setRoster([]);
       setOverrideRows([]);
+      setFeedRecords([]);
+      setFeedError(null);
       return;
     }
 
@@ -286,31 +302,52 @@ export const LiveSessionView: React.FC = () => {
   useEffect(() => {
     if (!sessionActive || !activeSession?.sessionId) {
       setOverrideRows([]);
+      setFeedRecords([]);
+      setFeedError(null);
       return;
     }
 
     let cancelled = false;
 
-    const loadOverrides = async () => {
-      const { data, error } = await supabase
-        .from('attendance_overrides')
-        .select('id, student_id, created_at, reason, reason_note, teacher_id')
-        .eq('session_id', activeSession.sessionId)
-        .order('created_at', { ascending: true });
+    const loadFeed = async () => {
+      const [recordsResult, overridesResult] = await Promise.all([
+        supabase
+          .from('attendance_records')
+          .select(
+            'id, session_id, student_id, code_entered, status, reject_reason, webauthn_verified, device_fingerprint, created_at'
+          )
+          .eq('session_id', activeSession.sessionId),
+        supabase
+          .from('attendance_overrides')
+          .select('id, student_id, created_at, reason, reason_note, teacher_id')
+          .eq('session_id', activeSession.sessionId),
+      ]);
 
       if (cancelled) return;
 
-      if (error) {
-        console.error('[LiveSessionView] override lookup failed:', error);
-        setRosterError((current) => current ?? error.message);
-        return;
+      const errors: string[] = [];
+
+      if (recordsResult.error) {
+        console.error('[LiveSessionView] attendance record lookup failed:', recordsResult.error);
+        errors.push(recordsResult.error.message);
+      } else {
+        setFeedRecords((recordsResult.data ?? []) as FeedRecordRow[]);
       }
 
-      setOverrideRows((data ?? []) as OverrideRow[]);
+      if (overridesResult.error) {
+        const overrideError = overridesResult.error;
+        console.error('[LiveSessionView] override lookup failed:', overrideError);
+        errors.push(overrideError.message);
+        setRosterError((current) => current ?? overrideError.message);
+      } else {
+        setOverrideRows((overridesResult.data ?? []) as OverrideRow[]);
+      }
+
+      setFeedError(errors.length > 0 ? errors.join(' · ') : null);
     };
 
-    loadOverrides();
-    const interval = setInterval(loadOverrides, 5000);
+    loadFeed();
+    const interval = setInterval(loadFeed, 5000);
 
     return () => {
       cancelled = true;
@@ -320,7 +357,7 @@ export const LiveSessionView: React.FC = () => {
 
   useEffect(() => {
     const ids = new Set<string>();
-    for (const record of attendanceRecords) ids.add(record.student_id);
+    for (const record of feedRecords) ids.add(record.student_id);
     for (const override of overrideRows) ids.add(override.student_id);
     if (ids.size === 0) {
       setFeedStudents({});
@@ -338,6 +375,7 @@ export const LiveSessionView: React.FC = () => {
       if (cancelled) return;
       if (error) {
         console.error('[LiveSessionView] student lookup failed:', error);
+        setFeedError(error.message);
         return;
       }
 
@@ -353,7 +391,7 @@ export const LiveSessionView: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [attendanceRecords, overrideRows]);
+  }, [feedRecords, overrideRows]);
 
   const overriddenStudentIds = useMemo(
     () => new Set(overrideRows.map((row) => row.student_id)),
@@ -370,25 +408,33 @@ export const LiveSessionView: React.FC = () => {
   }, [roster, feedStudents]);
 
   const feedEntries = useMemo(() => {
-    const entries = [
-      ...attendanceRecords.map((record) => ({
+    const entries = new Map<
+      string,
+      { key: string; studentId: string; createdAt: string; manual: boolean }
+    >();
+
+    for (const record of feedRecords) {
+      entries.set(record.student_id, {
         key: `record:${record.id}`,
         studentId: record.student_id,
         createdAt: record.created_at,
         manual: false,
-      })),
-      ...overrideRows.map((row) => ({
+      });
+    }
+
+    for (const row of overrideRows) {
+      entries.set(row.student_id, {
         key: `override:${row.id}`,
         studentId: row.student_id,
         createdAt: row.created_at,
         manual: true,
-      })),
-    ];
+      });
+    }
 
-    return entries.sort(
+    return Array.from(entries.values()).sort(
       (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
     );
-  }, [attendanceRecords, overrideRows]);
+  }, [feedRecords, overrideRows]);
 
   const presentStudentIds = useMemo(() => {
     const set = new Set<string>(verifiedStudentIds);
@@ -707,6 +753,12 @@ export const LiveSessionView: React.FC = () => {
               </div>
 
               <div className="mt-3 space-y-2.5 overflow-y-auto flex-1 pr-1">
+                {feedError && (
+                  <div className="p-3 rounded-xl bg-[#DB5B4E]/10 border border-[#DB5B4E]/30 text-xs font-bold text-[#DB5B4E] flex items-start gap-2">
+                    <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                    <span className="break-words">{feedError}</span>
+                  </div>
+                )}
                 {feedEntries.length > 0 ? (
                   feedEntries.map((entry) => {
                     const student = studentById.get(entry.studentId);
