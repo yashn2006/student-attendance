@@ -320,11 +320,21 @@ serve(async (req: Request): Promise<Response> => {
     // expectedChallenge from the client's own clientDataJSON (which makes
     // the challenge check a no-op — the client controls what it claims).
     // Decode the challenge the browser actually signed, from clientDataJSON
-const clientDataJSON = JSON.parse(
-  new TextDecoder().decode(base64StringToUint8Array(webauthnAssertion.response.clientDataJSON)),
-);
-const signedChallenge = clientDataJSON.challenge;
-
+let signedChallenge = "";
+try {
+  const clientDataJSON = JSON.parse(
+    new TextDecoder().decode(base64StringToUint8Array(webauthnAssertion.response.clientDataJSON)),
+  );
+  signedChallenge = String(clientDataJSON.challenge ?? "");
+} catch {
+  signedChallenge = "";
+}
+if (!signedChallenge) {
+  return new Response(
+    JSON.stringify({ status: "rejected", reason: "webauthn_failed" }),
+    { status: 200, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
+  );
+}
 const { data: challengeRow, error: challengeErr } = await supabase
   .from("webauthn_challenges")
   .select("challenge, expires_at")
@@ -355,8 +365,7 @@ const { data: challengeRow, error: challengeErr } = await supabase
           publicKey: credentialPublicKey,
           counter: binding.sign_count,
         },
-        requiresUserVerification: true,
-        requireUserPresence: true,
+        requireUserVerification: true,
       });
     } catch (verifyErr) {
       console.error(
@@ -444,6 +453,13 @@ const { data: challengeRow, error: challengeErr } = await supabase
       })
       .select("id")
       .single();
+      
+      if (insertErr?.code === "23505") {
+  return new Response(
+    JSON.stringify({ status: "rejected", reason: "already_marked" }),
+    { status: 200, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
+  );
+}
 
     if (insertErr || !record) {
       console.error(

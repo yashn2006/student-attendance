@@ -198,6 +198,12 @@ export const LiveSessionView: React.FC = () => {
     }
   }, [classes, selectedClassId]);
 
+  useEffect(() => {
+    if (activeSession?.classId) {
+      setSelectedClassId(activeSession.classId);
+    }
+  }, [activeSession?.classId]);
+
   const selectedClass = useMemo(
     () => (Array.isArray(classes) ? classes.find((c) => c.id === selectedClassId) : null),
     [classes, selectedClassId]
