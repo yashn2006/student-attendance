@@ -12,6 +12,7 @@ import { AttendanceSheetView } from './components/attendance/AttendanceSheetView
 import { TimetableBuilderView } from './components/timetable/TimetableBuilderView';
 import { AdminDashboard } from './components/admin/AdminDashboard';
 import { ClassStudentsView } from './components/students/ClassStudentsView';
+import { SendNotificationView } from './components/notifications/SendNotificationView';
 import { ProfileSettingsView } from './components/profile/ProfileSettingsView';
 import { CommandPalette } from './components/command/CommandPalette';
 import { NotificationDrawer } from './components/notifications/NotificationDrawer';
@@ -87,6 +88,8 @@ const MainAppContent: React.FC = () => {
         return { title: 'Student Directory', subtitle: 'Students enrolled in your classes' };
       case 'timetable':
         return { title: 'Timetable', subtitle: 'Weekly schedule and slot booking' };
+      case 'notify':
+        return { title: 'Send notification', subtitle: 'Message all students in a class' };
       case 'admin':
         return { title: 'Admin', subtitle: 'Classes, subjects, teachers and assignments' };
       case 'profile':
@@ -138,6 +141,8 @@ const MainAppContent: React.FC = () => {
                 {currentTab === 'students' && <ClassStudentsView />}
 
                 {currentTab === 'timetable' && <TimetableBuilderView />}
+
+                {currentTab === 'notify' && <SendNotificationView />}
 
                 {currentTab === 'admin' && <AdminDashboard />}
 

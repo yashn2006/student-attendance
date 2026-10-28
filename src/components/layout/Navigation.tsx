@@ -11,7 +11,8 @@ import {
   Plus,
   Grid,
   X,
-  ShieldCheck
+  ShieldCheck,
+  Bell
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 
@@ -28,6 +29,7 @@ export const navItems: NavItem[] = [
   { id: 'attendance_sheet', label: 'Attendance Sheet', icon: FileSpreadsheet, description: 'Verified check-ins and manual overrides' },
   { id: 'students', label: 'Student Directory', icon: Users, description: 'Students enrolled in your classes' },
   { id: 'timetable', label: 'Timetable', icon: Calendar, description: 'Weekly schedule & slot booking' },
+  { id: 'notify', label: 'Send notification', icon: Bell, description: 'Message all students in a class' },
   { id: 'admin', label: 'Admin', icon: ShieldCheck, description: 'Admin panel' },
   { id: 'profile', label: 'Profile & Settings', icon: User, description: 'Account and app settings' }
 ];
@@ -205,7 +207,7 @@ export const Navigation: React.FC<NavigationProps> = ({
         <button
           onClick={() => setIsMoreSheetOpen(true)}
           className={`flex flex-col items-center justify-center py-1 px-2 rounded-xl transition-all cursor-pointer tap-active ${
-            ['timetable', 'admin', 'profile'].includes(currentTab)
+            ['timetable', 'notify', 'admin', 'profile'].includes(currentTab)
               ? 'text-[#12A176] font-extrabold scale-105'
               : 'text-[#5C6B63]'
           }`}
