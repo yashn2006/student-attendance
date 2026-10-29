@@ -20,6 +20,27 @@ const CORS_HEADERS = {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const CODE_RE = /^\d{6}$/;
+const GRACE_MS = 15_000;
+
+function codeStillValid(
+  s: {
+    current_code?: string | null;
+    code_expires_at?: string | null;
+    previous_code?: string | null;
+    previous_code_valid_until?: string | null;
+  },
+  code: string,
+  nowMs: number,
+): boolean {
+  const currentOk = s.current_code === code
+    && !!s.code_expires_at
+    && nowMs < new Date(s.code_expires_at).getTime() + GRACE_MS;
+  const previousOk = !!s.previous_code
+    && s.previous_code === code
+    && !!s.previous_code_valid_until
+    && nowMs < new Date(s.previous_code_valid_until).getTime();
+  return currentOk || previousOk;
+}
 
 function json(body: unknown, status: number) {
   return new Response(JSON.stringify(body), {
@@ -97,6 +118,8 @@ serve(async (req: Request): Promise<Response> => {
       window_end: string | null;
       current_code?: string;
       code_expires_at?: string | null;
+      previous_code?: string | null;
+      previous_code_valid_until?: string | null;
     } | null = null;
 
     if (sessionId) {
@@ -114,17 +137,16 @@ serve(async (req: Request): Promise<Response> => {
     } else {
       const { data, error } = await supabase
         .from("sessions")
-        .select("id, class_id, teacher_id, status, window_end, current_code, code_expires_at")
-        .eq("current_code", code)
-        .eq("status", "active")
-        .limit(1)
-        .maybeSingle();
+        .select("id, class_id, teacher_id, status, window_end, current_code, code_expires_at, previous_code, previous_code_valid_until")
+        .or(`current_code.eq.${code},previous_code.eq.${code}`)
+        .eq("status", "active");
 
       if (error) {
         console.error("[session-resolve] code lookup failed:", error.message);
         return json({ status: "error", message: "Failed to load session" }, 500);
       }
-      session = data;
+      const nowMs = Date.now();
+      session = (data ?? []).find((s) => codeStillValid(s, code, nowMs)) ?? null;
     }
 
     if (!session) {
@@ -144,17 +166,6 @@ serve(async (req: Request): Promise<Response> => {
         if (closeErr) console.error("[session-resolve] close error:", closeErr.message);
       }
       return json({ status: "error", message: "This session has ended" }, 410);
-    }
-
-    if (!sessionId) {
-      const codeExpired = !session.code_expires_at
-        || new Date(session.code_expires_at).getTime() < now;
-      if (codeExpired) {
-        return json(
-          { status: "error", message: "Code has expired, please check the current code" },
-          410,
-        );
-      }
     }
 
     const { data: enrollment, error: enrollError } = await supabase
