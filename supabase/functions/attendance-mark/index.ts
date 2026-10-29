@@ -27,6 +27,8 @@ const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const CODE_RE = /^\d{6}$/;
+const CODE_TTL_MS = 30_000;
+const GRACE_MS = 15_000;
 
 const RP_ID = Deno.env.get("WEBAUTHN_RP_ID") ?? "coreegin.com";
 const ORIGIN = (Deno.env.get("WEBAUTHN_ORIGIN") ?? "https://campus-os.coreegin.com").trim();
@@ -200,7 +202,7 @@ serve(async (req: Request): Promise<Response> => {
     // ------------------------------------------------------------------
     const { data: session, error: sessionErr } = await supabase
       .from("sessions")
-      .select("id, class_id, current_code, code_expires_at, window_end, status")
+      .select("id, class_id, current_code, code_expires_at, previous_code, previous_code_valid_until, window_end, status")
       .eq("id", sessionId)
       .single();
 
@@ -250,7 +252,8 @@ serve(async (req: Request): Promise<Response> => {
       );
     }
 
-    // 3. Code validation: generation-time expiry rule.
+    // 3. Code validation: accept the current code within its expiry plus the
+    // grace window, or the previous code until its grace window ends.
     //
     // Per device-attendance-flow SKILL.md the expiry check MUST use the
     // code's original generation-time expiry (code_expires_at), never
@@ -258,15 +261,17 @@ serve(async (req: Request): Promise<Response> => {
     const codeExpiresMs = session.code_expires_at
       ? new Date(session.code_expires_at).getTime()
       : 0;
+    const previousCodeValidUntilMs = session.previous_code_valid_until
+      ? new Date(session.previous_code_valid_until).getTime()
+      : 0;
 
-    if (nowMs >= codeExpiresMs) {
-      return new Response(
-        JSON.stringify({ status: "rejected", reason: "code_expired" }),
-        { status: 200, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
-      );
-    }
+    const matchesCurrentCode = codeEntered === session.current_code
+      && nowMs < codeExpiresMs + GRACE_MS;
+    const matchesPreviousCode = session.previous_code !== null
+      && codeEntered === session.previous_code
+      && nowMs < previousCodeValidUntilMs;
 
-    if (codeEntered !== session.current_code) {
+    if (!matchesCurrentCode && !matchesPreviousCode) {
       return new Response(
         JSON.stringify({ status: "rejected", reason: "code_expired" }),
         { status: 200, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },

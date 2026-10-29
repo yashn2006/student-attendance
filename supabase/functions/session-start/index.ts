@@ -24,7 +24,7 @@ const CORS_HEADERS = {
 };
 
 const SESSION_WINDOW_MS = 5 * 60 * 1000;
-const CODE_TTL_MS = 15 * 1000;
+const CODE_TTL_MS = 30 * 1000;
 const MAX_CODE_ATTEMPTS = 5;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 

@@ -19,6 +19,7 @@ const CORS_HEADERS = {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const CODE_TTL_MS = 30_000;
+const GRACE_MS = 15_000;
 
 function generateCode(): string {
   return String(Math.floor(100000 + Math.random() * 900000));
@@ -114,6 +115,13 @@ serve(async (req: Request): Promise<Response> => {
 
     if (nowMs >= codeExpiresMs) {
       const newExpiresAt = new Date(nowMs + CODE_TTL_MS).toISOString();
+      const oldCode = session.current_code ?? "";
+      const oldExpiresMs = session.code_expires_at
+        ? new Date(session.code_expires_at).getTime()
+        : 0;
+      const previousCodeValidUntil = oldExpiresMs
+        ? new Date(oldExpiresMs + GRACE_MS).toISOString()
+        : null;
       let rotatedCode: string | null = null;
 
       for (let attempt = 0; attempt < 5; attempt++) {
@@ -123,6 +131,8 @@ serve(async (req: Request): Promise<Response> => {
           .update({
             current_code: candidate,
             code_expires_at: newExpiresAt,
+            previous_code: oldCode,
+            previous_code_valid_until: previousCodeValidUntil,
           })
           .eq("id", sessionId);
 
