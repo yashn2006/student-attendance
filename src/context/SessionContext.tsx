@@ -12,6 +12,7 @@ interface ActiveSession {
   windowEnd: string;
   currentCode: string;
   codeExpiresAt: string;
+  serverOffsetMs?: number;
   status: 'active' | 'closed';
 }
 
@@ -129,53 +130,79 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [activeSession, setActiveSession] = useState<ActiveSession | null>(null);
   const [attendanceRecords, setAttendanceRecords] = useState<AttendanceRecordRow[]>([]);
   const codePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const codeRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const historyPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const restoreRequestRef = useRef(0);
 
   const clearPolls = useCallback(() => {
     if (codePollRef.current) clearInterval(codePollRef.current);
+    if (codeRetryRef.current) clearTimeout(codeRetryRef.current);
     if (historyPollRef.current) clearInterval(historyPollRef.current);
     codePollRef.current = null;
+    codeRetryRef.current = null;
     historyPollRef.current = null;
   }, []);
 
   useEffect(() => clearPolls, [clearPolls]);
 
+  const refreshCode = useCallback(async (sessionId: string, ownerId: string): Promise<void> => {
+    if (codeRetryRef.current) {
+      clearTimeout(codeRetryRef.current);
+      codeRetryRef.current = null;
+    }
+    const { data, error } = await supabase.functions.invoke(
+      `session-current-code?sessionId=${sessionId}`,
+      { method: 'GET' }
+    );
+    if (error) {
+      const status = functionErrorStatus(error);
+      if (status === 403 || status === 404) {
+        clearPolls();
+        removeStoredSession(ownerId);
+        setActiveSession((prev) =>
+          prev && prev.sessionId === sessionId ? null : prev
+        );
+        setAttendanceRecords([]);
+        return;
+      }
+      console.error('[SessionContext] session-current-code failed:', error);
+      return;
+    }
+    const serverNowMs = typeof data?.serverNow === 'string' ? Date.parse(data.serverNow) : NaN;
+    const serverOffsetMs = Number.isFinite(serverNowMs) ? serverNowMs - Date.now() : 0;
+    setActiveSession((prev) => {
+      if (!prev || prev.sessionId !== sessionId || prev.teacherId !== ownerId) return prev;
+      return {
+        ...prev,
+        currentCode: data.currentCode,
+        codeExpiresAt: data.codeExpiresAt,
+        serverOffsetMs,
+        status: data.sessionStatus,
+      };
+    });
+    if (data.sessionStatus === 'closed') {
+      removeStoredSession(ownerId);
+      clearPolls();
+      return;
+    }
+    const returnedExpiresMs = typeof data.codeExpiresAt === 'string' ? Date.parse(data.codeExpiresAt) : NaN;
+    if (
+      Number.isFinite(returnedExpiresMs) &&
+      Number.isFinite(serverNowMs) &&
+      returnedExpiresMs <= serverNowMs
+    ) {
+      codeRetryRef.current = setTimeout(() => {
+        codeRetryRef.current = null;
+        void refreshCode(sessionId, ownerId);
+      }, 300);
+    }
+  }, [clearPolls]);
+
   const startPolling = useCallback((sessionId: string, ownerId: string) => {
     clearPolls();
 
-    codePollRef.current = setInterval(async () => {
-      const { data, error } = await supabase.functions.invoke(
-        `session-current-code?sessionId=${sessionId}`,
-        { method: 'GET' }
-      );
-      if (error) {
-        const status = functionErrorStatus(error);
-        if (status === 403 || status === 404) {
-          clearPolls();
-          removeStoredSession(ownerId);
-          setActiveSession((prev) =>
-            prev && prev.sessionId === sessionId ? null : prev
-          );
-          setAttendanceRecords([]);
-          return;
-        }
-        console.error('[SessionContext] session-current-code failed:', error);
-        return;
-      }
-      setActiveSession((prev) => {
-        if (!prev || prev.sessionId !== sessionId || prev.teacherId !== ownerId) return prev;
-        return {
-          ...prev,
-          currentCode: data.currentCode,
-          codeExpiresAt: data.codeExpiresAt,
-          status: data.sessionStatus,
-        };
-      });
-      if (data.sessionStatus === 'closed') {
-        removeStoredSession(ownerId);
-        clearPolls();
-      }
+    codePollRef.current = setInterval(() => {
+      void refreshCode(sessionId, ownerId);
     }, 5000);
 
     historyPollRef.current = setInterval(async () => {
@@ -189,7 +216,26 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
       }
       if (data?.records) setAttendanceRecords(data.records);
     }, 5000);
-  }, [clearPolls]);
+  }, [clearPolls, refreshCode]);
+
+  useEffect(() => {
+    if (!activeSession || activeSession.status !== 'active') return;
+    const expiresMs = Date.parse(activeSession.codeExpiresAt);
+    if (!Number.isFinite(expiresMs)) return;
+    const offset = activeSession.serverOffsetMs ?? 0;
+    const delay = Math.max(0, expiresMs - (Date.now() + offset)) + 100;
+    const timer = setTimeout(() => {
+      void refreshCode(activeSession.sessionId, activeSession.teacherId);
+    }, delay);
+    return () => clearTimeout(timer);
+  }, [
+    activeSession?.sessionId,
+    activeSession?.codeExpiresAt,
+    activeSession?.serverOffsetMs,
+    activeSession?.status,
+    activeSession?.teacherId,
+    refreshCode,
+  ]);
 
   useEffect(() => {
     if (authLoading) return;
@@ -290,6 +336,7 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
         codeExpiresAt: savedMatches
           ? savedSession!.codeExpiresAt
           : (data.code_expires_at ?? new Date().toISOString()),
+        serverOffsetMs: 0,
         status: 'active',
       });
       setAttendanceRecords([]);
@@ -334,6 +381,8 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
       return { error: error?.message || 'Failed to start session' };
     }
 
+    const serverNowMs = typeof data.serverNow === 'string' ? Date.parse(data.serverNow) : NaN;
+
     setActiveSession({
       sessionId: data.sessionId,
       teacherId,
@@ -343,6 +392,7 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
       windowEnd: data.windowEnd,
       currentCode: data.currentCode,
       codeExpiresAt: data.codeExpiresAt,
+      serverOffsetMs: Number.isFinite(serverNowMs) ? serverNowMs - Date.now() : 0,
       status: 'active',
     });
     setAttendanceRecords([]);

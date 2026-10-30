@@ -520,8 +520,12 @@ export const LiveSessionView: React.FC = () => {
     }
   };
 
+  const codeOffsetMs = activeSession?.serverOffsetMs ?? 0;
   const codeSecondsLeft = activeSession
-    ? Math.max(0, Math.round((new Date(activeSession.codeExpiresAt).getTime() - now) / 1000))
+    ? Math.max(
+        0,
+        Math.ceil((Date.parse(activeSession.codeExpiresAt) - (Date.now() + codeOffsetMs)) / 1000),
+      )
     : 0;
 
   const windowSecondsLeft = activeSession

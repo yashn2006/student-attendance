@@ -27,7 +27,7 @@ const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const CODE_RE = /^\d{6}$/;
-const CODE_TTL_MS = 30_000;
+const CODE_TTL_MS = 15_000;
 const GRACE_MS = 15_000;
 
 const RP_ID = Deno.env.get("WEBAUTHN_RP_ID") ?? "coreegin.com";

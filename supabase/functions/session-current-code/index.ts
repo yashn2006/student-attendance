@@ -18,7 +18,7 @@ const CORS_HEADERS = {
 };
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const CODE_TTL_MS = 30_000;
+const CODE_TTL_MS = 15_000;
 const GRACE_MS = 15_000;
 
 function generateCode(): string {
@@ -87,6 +87,7 @@ serve(async (req: Request): Promise<Response> => {
       return json({
         currentCode: session.current_code ?? "",
         codeExpiresAt: session.code_expires_at ?? new Date().toISOString(),
+        serverNow: new Date().toISOString(),
         sessionStatus: "closed",
       }, 200);
     }
@@ -104,6 +105,7 @@ serve(async (req: Request): Promise<Response> => {
       return json({
         currentCode: session.current_code ?? "",
         codeExpiresAt: session.code_expires_at ?? new Date().toISOString(),
+        serverNow: new Date().toISOString(),
         sessionStatus: "closed",
       }, 200);
     }
@@ -153,6 +155,7 @@ serve(async (req: Request): Promise<Response> => {
       return json({
         currentCode: rotatedCode,
         codeExpiresAt: newExpiresAt,
+        serverNow: new Date().toISOString(),
         sessionStatus: "active",
       }, 200);
     }
@@ -160,6 +163,7 @@ serve(async (req: Request): Promise<Response> => {
     return json({
       currentCode: session.current_code ?? "",
       codeExpiresAt: session.code_expires_at ?? new Date().toISOString(),
+      serverNow: new Date().toISOString(),
       sessionStatus: "active",
     }, 200);
   } catch (err) {
