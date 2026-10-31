@@ -90,6 +90,13 @@ serve(async (req: Request): Promise<Response> => {
       return json({ status: "error", message: "Failed to load device credentials" }, 500);
     }
 
+    if ((existingCredentials ?? []).length > 0) {
+      return json(
+        { status: "error", message: "A device is already registered for this account. Ask your teacher to reset it." },
+        409,
+      );
+    }
+
     const excludeCredentials = (existingCredentials ?? []).map((c) => ({ id: c.credential_id }));
 
     const options = await generateRegistrationOptions({

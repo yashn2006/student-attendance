@@ -90,6 +90,24 @@ serve(async (req: Request): Promise<Response> => {
 
     const studentId = studentRow.id;
 
+    const { data: existingBinding, error: bindingLookupErr } = await supabase
+      .from("device_bindings")
+      .select("id")
+      .eq("student_id", studentId)
+      .limit(1)
+      .maybeSingle();
+
+    if (bindingLookupErr) {
+      console.error("[webauthn-register-verify] binding lookup failed:", bindingLookupErr.message);
+      return json({ status: "error", message: "Failed to load device credentials" }, 500);
+    }
+    if (existingBinding) {
+      return json(
+        { status: "error", message: "A device is already registered for this account. Ask your teacher to reset it." },
+        409,
+      );
+    }
+
     const { data: challengeRow, error: challengeErr } = await supabase
       .from("webauthn_challenges")
       .select("challenge, expires_at")
@@ -152,16 +170,6 @@ serve(async (req: Request): Promise<Response> => {
       return json({ status: "error", message: "This authenticator is already registered" }, 409);
     }
 
-    const { error: cleanupErr } = await supabase
-      .from("device_bindings")
-      .delete()
-      .eq("student_id", studentId);
-
-    if (cleanupErr) {
-      console.error("[webauthn-register-verify] old binding cleanup failed:", cleanupErr.message);
-      return json({ status: "error", message: "Failed to clear previous device binding" }, 500);
-    }
-
     const { error: bindingErr } = await supabase
       .from("device_bindings")
       .insert({
@@ -172,6 +180,12 @@ serve(async (req: Request): Promise<Response> => {
       });
 
     if (bindingErr) {
+      if (bindingErr.code === "23505") {
+        return json(
+          { status: "error", message: "A device is already registered for this account. Ask your teacher to reset it." },
+          409,
+        );
+      }
       console.error("[webauthn-register-verify] binding insert failed:", bindingErr.message);
       return json({ status: "error", message: "Failed to store device credential" }, 500);
     }
