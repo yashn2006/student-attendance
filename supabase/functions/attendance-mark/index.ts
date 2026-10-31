@@ -133,6 +133,25 @@ serve(async (req: Request): Promise<Response> => {
       );
     }
 
+    const ua = req.headers.get("user-agent") ?? "";
+    const chUa = req.headers.get("sec-ch-ua") ?? "";
+    const isAndroid = /Android/i.test(ua);
+    const isWebView = /; wv\)/i.test(ua);
+    const chromeByHint = /"Google Chrome"/.test(chUa);
+    const chromeByUa = /Chrome\//.test(ua) && !/(EdgA|Edg\/|OPR\/|SamsungBrowser|Firefox|FxiOS|DuckDuckGo|UCBrowser|YaBrowser|Vivaldi)/i.test(ua);
+    const isChrome = chUa ? chromeByHint : chromeByUa;
+    const ENFORCE_CHROME = Deno.env.get("ENFORCE_CHROME_ANDROID") === "true";
+
+    if (isAndroid && (!isChrome || isWebView)) {
+      console.warn("[attendance-mark] non-chrome android", { ua, chUa, enforced: ENFORCE_CHROME });
+      if (ENFORCE_CHROME) {
+        return new Response(
+          JSON.stringify({ status: "rejected", reason: "browser_not_allowed" }),
+          { status: 200, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
+        );
+      }
+    }
+
     let body: AttendanceMarkRequest;
     try {
       body = await req.json();
