@@ -706,14 +706,16 @@ export const LiveSessionView: React.FC = () => {
                 </div>
               </div>
 
-              <div className="p-6 bg-white rounded-2xl border-4 border-[#12A176]/60 shadow-xl relative">
+              <div className="p-6 bg-white rounded-2xl border-4 border-[#12A176]/60 shadow-xl relative max-w-full">
                 <QRCodeSVG
-  value={JSON.stringify({ type: 'attendance_session', code: activeSession?.currentCode || '' })}
-  size={230}
-  level="H"
-  includeMargin={true}
-  fgColor="#14201B"
-/>
+                  value={activeSession?.currentCode || ''}
+                  size={300}
+                  level="M"
+                  includeMargin={true}
+                  fgColor="#000000"
+                  bgColor="#FFFFFF"
+                  className="w-full h-auto max-w-[300px]"
+                />
                 <div className="absolute -top-3 -right-3 w-11 h-11 rounded-full bg-[#12A176] text-white font-mono font-bold text-sm flex items-center justify-center shadow-lg ring-4 ring-[#14201B]">
                   {codeSecondsLeft}s
                 </div>
